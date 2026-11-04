@@ -3,9 +3,10 @@
  * Who may originate work is configured per Source in that Source's own identities; the Policy never maps a person across Sources.
  */
 import { LIMITS } from './limits.ts'
+import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
-import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
+import { ENGINE_NAMES, key, isOperatorTrigger, OPERATOR_SOURCE, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
@@ -87,13 +88,37 @@ export const EvalConfigSchema = z.object({
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
-/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/** Claude Code permission modes, as the CLI names them: `default` is Manual, `acceptEdits` is Edit automatically. */
+export const ClaudePermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
+export type ClaudePermissionMode = z.infer<typeof ClaudePermissionModeSchema>
+/** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
+export const ClaudeApprovalSchema = z.enum(['ask', 'approve', 'deny'])
+export type ClaudeApproval = z.infer<typeof ClaudeApprovalSchema>
+/** Reasoning effort passed as `--effort`; empty keeps the CLI's own level for the model. */
+export const ClaudeEffortSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max'])
+export type ClaudeEffort = z.infer<typeof ClaudeEffortSchema>
+/** Executor settings: worker engine and model, concurrency, ticket directory root and mode, `prepare` command, blocked commands, and the native Claude Code executable, model, permission mode, effort and approval handling. */
 export const ExecutorConfigSchema = z.object({
+  engine: z.enum(ENGINE_NAMES).default('dsh'),
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
-  directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+  directory: z.string().trim().refine(path => path === '' || isAbsolute(path), 'An absolute path, or empty for <stateDir>/work').default(''),
+  /** `per-ticket` gives each Ticket a directory named after its short name under the root; `fixed` runs every Ticket in the root itself and skips the prepare command. */
+  directoryMode: z.enum(['per-ticket', 'fixed']).default('per-ticket'),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
+  /** The `claude` executable; empty resolves `CLAUDE_CODE_BIN`, the per-user install, then PATH. */
+  claudeBin: z.string().trim().default(''),
+  /** The Claude Code model id; empty keeps the CLI's own selection. */
+  claudeModel: z.string().trim().max(200).default(''),
+  /** The mode Claude Code starts in; `auto` reviews actions with its classifier, `bypassPermissions` skips its checks. */
+  claudePermissionMode: ClaudePermissionModeSchema.default('auto'),
+  /** How a tool call the mode still routes to the bridge is answered; `approve` keeps Tickets unattended. */
+  claudeApproval: ClaudeApprovalSchema.default('approve'),
+  /** Reasoning effort for new Claude Code processes; empty keeps the CLI's level. */
+  claudeEffort: ClaudeEffortSchema.default(''),
+  /** Turn on Claude Code's dynamic workflows; passed as `{"ultracode":true}` in `--settings`. */
+  claudeUltracode: z.boolean().default(false),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
@@ -189,6 +214,9 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   return {
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
     gate(trigger: Trigger, thread, tickets) {
+      // The operator writes in the main Session, whose tool alone creates this Trigger; no Source list or scope applies.
+      if (isOperatorTrigger(trigger)) return { admissible: true, strength: 'explicit',
+        basis: { source: OPERATOR_SOURCE, via: 'addressed', addressed: trigger.addressed ?? 'direct' } }
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)
       const scope = listened(sources, trigger.source, trigger.meta)
@@ -213,6 +241,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
+      // The operator's Mandate comes from the local main Session, which keeps its authority without a Source list.
+      if (basis.source === OPERATOR_SOURCE && basis.via === 'addressed') return mandate.strength === 'explicit'
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false

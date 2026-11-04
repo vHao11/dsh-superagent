@@ -9,7 +9,7 @@ type SourceSettings = SettingsVersion['settings']['sources'][string]
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
   | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
-  | 'blockedCommands'
+  | 'blockedCommands' | 'directoryMode' | 'claudePermissionMode' | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
 export interface SettingsChange {
   code: SettingsChangeCode; items?: string[]; from?: string | number | boolean; to?: string | number | boolean; name?: string; source?: string
@@ -69,8 +69,13 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (before.executor.maxWorkers !== after.executor.maxWorkers) changes.push({ code: 'maxWorkers', from: before.executor.maxWorkers, to: after.executor.maxWorkers })
   if (before.paused !== after.paused) changes.push({ code: after.paused ? 'paused' : 'resumed' })
   if (before.executor.directory !== after.executor.directory) changes.push({ code: 'executionDirectory', from: before.executor.directory, to: after.executor.directory })
+  if (before.executor.directoryMode !== after.executor.directoryMode) changes.push({ code: 'directoryMode', from: before.executor.directoryMode, to: after.executor.directoryMode })
   if (before.executor.prepare !== after.executor.prepare) changes.push({ code: 'prepareCommand' })
   if (!same(before.executor.blockedCommands, after.executor.blockedCommands)) changes.push({ code: 'blockedCommands', from: before.executor.blockedCommands.join(' '), to: after.executor.blockedCommands.join(' ') })
+  if (before.executor.claudePermissionMode !== after.executor.claudePermissionMode) changes.push({ code: 'claudePermissionMode', from: before.executor.claudePermissionMode, to: after.executor.claudePermissionMode })
+  if (before.executor.claudeApproval !== after.executor.claudeApproval) changes.push({ code: 'claudeApproval', from: before.executor.claudeApproval, to: after.executor.claudeApproval })
+  if (before.executor.claudeEffort !== after.executor.claudeEffort) changes.push({ code: 'claudeEffort', from: before.executor.claudeEffort, to: after.executor.claudeEffort })
+  if (before.executor.claudeUltracode !== after.executor.claudeUltracode) changes.push({ code: 'claudeUltracode', from: before.executor.claudeUltracode, to: after.executor.claudeUltracode })
   for (const id of new Set([...Object.keys(before.sources), ...Object.keys(after.sources)])) changes.push(...sourceChanges(id, before.sources[id], after.sources[id], sources))
   return changes
 }

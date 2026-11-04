@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
+import { ENGINE_NAMES, UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
@@ -19,7 +19,7 @@ const RoutingNoteSchema = z.string().trim()
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
   readonly context: Context
-  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
+  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note' | 'startTask' | 'instruct'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
@@ -52,6 +52,7 @@ const RouteItemSchema = z.object({
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
+  engine: z.enum(ENGINE_NAMES).nullish().describe('accept: the worker engine for this ticket, overriding the executor setting.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -64,6 +65,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
+  engine: { check: z.enum(ENGINE_NAMES), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -95,7 +97,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...(item.engine ? { engine: item.engine } : {}) })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -151,6 +153,41 @@ function routeTool(host: MainToolsHost): Tool {
     },
   })
 }
+const OperatorTaskSchema = z.object({
+  title: z.string().trim().min(1).max(200).describe('A short label in the person\'s language, with no added requirements.'),
+  request: z.string().trim().min(1).max(20000).describe('The person\'s request, copied as written; no added plan, criteria or instructions.'),
+  worktree_name: WorktreeNameSchema.optional(),
+  engine: z.enum(ENGINE_NAMES).optional().describe('claude-code for the native Claude Code agent, dsh for DSH\'s agent; omit for the executor setting.'),
+}).strict()
+/**
+ * `orchestrator_task_start`: start tasks the person asked for directly in this Session, without a Source candidate. Each item
+ * becomes an operator Trigger and an explicit accept, so the Executor launches its ticket with the chosen engine.
+ */
+function taskStartTool(host: MainToolsHost): Tool {
+  return tool({
+    name: 'orchestrator_task_start',
+    description: 'Start tasks the person asked for directly in this Session, without a Source message: one ticket per item, whose worker receives request as their own words. Never add a plan or requirements. Send more of their words with orchestrator_task_message; stop with orchestrator_task_stop.',
+    schema: z.object({ tasks: z.array(OperatorTaskSchema).min(1).max(20) }).strict(),
+    execute: async ({ tasks }) => {
+      const started = tasks.map(task => {
+        const head = { title: task.title }
+        try {
+          const decision = host.engine.startTask({ title: task.title, request: task.request, name: task.worktree_name ?? 'task',
+            ...(task.engine ? { engine: task.engine } : {}) })
+          const ticket = decision.ticketId ? host.store.tickets.get(decision.ticketId) : undefined
+          return { ...head, trigger_id: decision.triggerIds[0], decision: decision.kind, reason: reasonText(decision.reason),
+            ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
+        } catch (error) {
+          if (error instanceof UserError) return { ...head, refused: error.message }
+          host.context.logger.warn('dsh-superagent could not start an operator task: %s', String(error))
+          return { ...head, refused: `Not started: ${error instanceof Error ? error.message : String(error)}` }
+        }
+      })
+      host.requestPass()
+      return { started }
+    },
+  })
+}
 /** Builds the main Session's tools; `agent` scopes prompt preview resources to that Session. */
 export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
   const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
@@ -158,6 +195,23 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
     routeTool(host),
+    taskStartTool(host),
+    tool({
+      name: 'orchestrator_task_message',
+      description: 'Send the person\'s follow-up from this Session to a ticket started with orchestrator_task_start, as a human message on its own thread: its worker decides what is within the ticket, and an ended ticket resumes. Copy their words; add no requirements.',
+      schema: z.object({ ticket_id: z.string(), text: z.string().trim().min(1).max(20000) }).strict(),
+      execute: async args => {
+        const ticket = host.engine.instruct(args.ticket_id, args.text)
+        host.requestPass()
+        return { reason: 'Sent to the ticket worker', ticket: ticketCard(ticket) }
+      },
+    }),
+    tool({
+      name: 'orchestrator_task_stop',
+      description: 'Stop a ticket on the person\'s explicit stop, ending its assignments. Use it for a ticket started directly in this Session; for a Source ticket, use orchestrator_route kind stop with the person\'s stop message.',
+      schema: z.object({ ticket_id: z.string(), reason: z.string().trim().max(500).optional() }).strict(),
+      execute: async args => ({ reason: 'Stopped', ticket: ticketCard(host.engine.stopTicket(args.ticket_id, args.reason || undefined)) }),
+    }),
     tool({
       name: 'orchestrator_ticket_retry',
       description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',

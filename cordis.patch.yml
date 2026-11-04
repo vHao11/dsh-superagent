@@ -6,6 +6,9 @@
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
+    # Schedule Source: interval tasks configured on its card; each task can be set to feed superagent or not.
+    - id: dsh-superagent-schedule
+      name: dsh-superagent/schedule-watch
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

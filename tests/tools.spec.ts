@@ -133,6 +133,53 @@ it('answers every routing tool in one shape: the decision it recorded, why, and 
   expect(TICKET_STATES).toContain(stopped.ticket.state)
 })
 
+it('records the worker engine a route item chooses, so the ticket keeps it', async () => {
+  const request = feishu('engine', '@bot 修一下这个回归')
+  h.runtime.receive(request); await h.runtime.idle()
+  const routed = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [{ kind: 'accept', trigger_id: request.id,
+    title: 'Native worker', worktree_name: 'native-worker', acknowledgement: '收到。', engine: 'claude-code' }] }) as {
+      results: { ticket: { ticket_id: string } }[] }
+  expect(h.runtime.store.tickets.get(routed.results[0]!.ticket.ticket_id)!.execution?.engine).toBe('claude-code')
+})
+
+it('starts, messages and stops tasks the operator names directly in the main Session', async () => {
+  const run = (name: string, args: unknown) => h.runTool(h.runtime.masterId, name, args)
+  const { started } = await run('orchestrator_task_start', { tasks: [
+    { title: '调整首页间距', request: '把首页标题和卡片的间距调大一点。', worktree_name: 'tune-home-spacing' },
+    { title: '改按钮文案', request: '把提交按钮改成保存。', worktree_name: 'fix-button-copy', engine: 'dsh' },
+  ] }) as { started: { trigger_id: string; decision: string; reason: string; ticket: { ticket_id: string; state: string } }[] }
+  await h.runtime.idle()
+  expect(started).toHaveLength(2)
+  expect(started[0]).toMatchObject({ decision: 'accept', reason: 'Started directly by the operator in the main Session',
+    trigger_id: expect.any(String), ticket: { ticket_id: expect.any(String) } })
+  const ticket = h.runtime.store.tickets.get(started[0]!.ticket.ticket_id)!
+  expect(ticket).toMatchObject({ title: '调整首页间距', mandate: { strength: 'explicit',
+    basis: { source: 'operator', via: 'addressed', addressed: 'direct' } },
+    execution: { name: expect.stringContaining('tune-home-spacing'), engine: 'dsh' } })
+  expect(h.runtime.store.triggers.get(started[0]!.trigger_id)).toMatchObject({ source: 'operator', human: true,
+    text: '把首页标题和卡片的间距调大一点。' })
+  const worker = (text: string) => h.deliveries.mock.calls.map(([delivery]) => delivery)
+    .some(delivery => delivery.sessionId === `worker-${ticket.id}` && delivery.text.includes(text))
+  // The worker received the person's words as its trigger.
+  expect(worker('把首页标题和卡片的间距调大一点。')).toBe(true)
+  // A follow-up on the ticket's own thread reaches the same worker; another Source's ticket takes none.
+  expect(await run('orchestrator_task_message', { ticket_id: ticket.id, text: '只在移动端调大。' }))
+    .toEqual({ reason: 'Sent to the ticket worker', ticket: expect.objectContaining({ ticket_id: ticket.id }) })
+  await h.runtime.idle()
+  expect(worker('只在移动端调大。')).toBe(true)
+  // The worker acknowledges the person's follow-up without an external Channel.
+  const followup = h.runtime.store.read.threadTriggers(`operator:${started[0]!.trigger_id}`).at(-1)!
+  expect(await h.runTool(`worker-${ticket.id}`, 'orchestrator_ack', { trigger_id: followup.id, text: '收到，马上处理。' }))
+    .toEqual({ trigger_id: followup.id, acknowledgement: 'sent', reused: false })
+  const { ticket: sourceTicket } = await h.acceptedTicket(feishu('8', '@bot 修一下回归'))
+  await expect(run('orchestrator_task_message', { ticket_id: sourceTicket.id, text: '顺便改这个' }))
+    .rejects.toThrow('Only a ticket started directly from the main Session')
+  // A stop ends the ticket and its assignment.
+  const stopped = await run('orchestrator_task_stop', { ticket_id: ticket.id, reason: '不需要了' }) as
+    { ticket: { state: string; ended: { by: string; reason: string } } }
+  expect(stopped.ticket).toMatchObject({ state: 'stopped', ended: { by: 'human', reason: '不需要了' } })
+})
+
 it('routes several triggers in one call, in order, and answers a refused or failed item without undoing the others', async () => {
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   const thanks = feishu('2', '@bot 谢谢'), request = feishu('3', '@bot 另一个问题'), other = feishu('4', '@bot 顺便看看这个'), more = feishu('6', '@bot 还有这个')

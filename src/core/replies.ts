@@ -3,6 +3,7 @@ import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
+import { isOperatorTrigger } from './operator.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
 
@@ -52,8 +53,13 @@ export class Replies extends EnginePart {
     if (!trigger) throw new UserError('unknownTrigger')
     // Context-only threads are read-only and cannot receive acknowledgements.
     if (!this.reaches(ticket, trigger, false)) throw new UserError('notReached')
-    if (!trigger.channel) throw new UserError('ackNoChannel')
     const id = key('ack', trigger.id)
+    // A direct task has no external Channel: the operator reads the acknowledgement as the worker's work in the main Session.
+    if (!trigger.channel) {
+      if (!isOperatorTrigger(trigger)) throw new UserError('ackNoChannel')
+      this.takeUp(ticket.id, trigger.id)
+      return { id, status: 'sent', reused: this.options.outbox.status(id) !== undefined }
+    }
     const existing = this.options.outbox.status(id)
     if (!existing && !trigger.human) throw new UserError('ackNotPerson')
     // Preserve the automatic or first queued acknowledgement.

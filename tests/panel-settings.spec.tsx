@@ -52,10 +52,22 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
     'worker-model'); await type(effort as HTMLInputElement, 'high')
   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+  // Choosing the native engine reveals its executable, model, permission mode, approval handling, effort and Ultracode.
+  await type(field<HTMLSelectElement>(zh.executorEngine), 'claude-code')
+  await type(field<HTMLInputElement>(zh.claudeBin), '/opt/claude')
+  await type(field<HTMLInputElement>(zh.claudeModel), 'claude-sonnet-5-5')
+  await type(field<HTMLSelectElement>(zh.claudePermissionMode), 'acceptEdits')
+  await type(field<HTMLSelectElement>(zh.claudeApproval), 'ask')
+  await type(field<HTMLSelectElement>(zh.claudeEffort), 'max')
+  await click(zh.claudeUltracode)
+  // The fixed directory mode runs every Ticket in the root and skips the prepare command, which the form says.
+  await type(field<HTMLSelectElement>(zh.directoryMode), 'fixed')
+  expect(field<HTMLTextAreaElement>(zh.prepareCommand).closest('.dt-field')!.querySelector('small')?.textContent).toBe(zh.prepareCommandFixed)
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
-      model: 'worker-model', reasoningEffort: 'high' } })
+  expect(server.settings.executor).toEqual({ engine: 'claude-code', maxWorkers: 5, directory: '/srv/work', directoryMode: 'fixed',
+    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], claudeBin: '/opt/claude',
+    claudeModel: 'claude-sonnet-5-5', claudePermissionMode: 'acceptEdits', claudeApproval: 'ask', claudeEffort: 'max',
+    claudeUltracode: true, model: { provider: 'worker-provider', model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])
 })

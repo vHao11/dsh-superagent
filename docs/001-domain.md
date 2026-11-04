@@ -38,6 +38,8 @@ Source, Thread, Eval, Mandate and Subscription form the core domain; the rest su
 
 A person is not a domain concept. A Trigger carries its actor's identifier as the Source gives it. An allowed list is a Source's part of the Policy, in that Source's identities. That one person has accounts on several Sources is prompt text that the agents read when they need it.
 
+The operator's own request is the one Trigger without a Source kind. The main Session's task tools create it under the internal `operator` Source, which has no channel, scope or read position; it exists so direct work follows the same Trigger, Ticket and Assignment path as work from a Source.
+
 The Executor, with its Sessions and directories, is outside the domain and connects through Assignments.
 
 Aggregates: a Source holds its read position. A Thread holds its Subscriptions, its running Eval, which runs serially and merges Triggers that arrive meanwhile into the next batch, and its Decision history. A Ticket holds its Assignments, Channels and Inputs, and refers to Decisions by id.

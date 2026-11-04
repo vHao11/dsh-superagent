@@ -1,5 +1,6 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
+import { key } from './ids.ts'
 import { isoTime, liveTicket } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
@@ -7,6 +8,7 @@ import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
 import { Evals, type Outcome } from './evals.ts'
 import { Intake, type ReceiveResult } from './intake.ts'
+import { isOperatorTrigger, OPERATOR_SOURCE, operatorActor, type OperatorTask } from './operator.ts'
 import { Replies, type Reply, type ReplyRequest } from './replies.ts'
 import { Tickets } from './tickets.ts'
 
@@ -86,6 +88,43 @@ export class Engine {
 
   // The main Session
 
+  /**
+   * Start a task the operator typed in the main Session: store it as an operator Trigger on a Thread of its own and accept
+   * it at explicit strength, so the Executor launches a ticket whose worker receives `task.request` as the person's message.
+   * No Source, Eval or assessment is involved; the main Session's tool is the only writer of operator Triggers, which the
+   * Policy admits as the operator's own (see docs/002).
+   */
+  startTask(task: OperatorTask): Decision {
+    return this.repo.atomic(() => {
+      const at = this.options.now?.() ?? new Date().toISOString()
+      const id = key('operator-task', at, task.title, task.request, task.engine ?? '', task.name ?? '')
+      const trigger: Trigger = { id, source: OPERATOR_SOURCE, threads: [{ source: OPERATOR_SOURCE, id }], actor: operatorActor,
+        human: true, addressed: 'direct', at, text: task.request, meta: { title: task.title } }
+      this.intake.receive(trigger)
+      return this.evals.decide(id, { kind: 'accept', title: task.title, scope: task.title, reason: { code: 'operatorTask' },
+        ...(task.name ? { name: task.name } : {}), ...(task.engine ? { engine: task.engine } : {}) })
+    })
+  }
+  /**
+   * Give a ticket the operator's follow-up from the main Session as a person's message on its own Thread, which its worker
+   * decides and which resumes an ended ticket. No new Decision is needed: the ticket's Mandate already covers work within
+   * its scope, and the worker hands back what is beyond it.
+   * @throws UserError when the ticket is unknown, was not started directly by the operator, or a person stopped it.
+   */
+  instruct(ticketId: string, text: string): Ticket {
+    return this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      if (!ticket) throw new UserError('unknownTicket')
+      if (ticket.ended?.by === 'human') throw new UserError('ticketStopped')
+      const origin = this.repo.triggers.get(ticket.origin.triggerId)
+      if (!origin || !isOperatorTrigger(origin)) throw new UserError('notOperatorTicket')
+      const at = this.options.now?.() ?? new Date().toISOString()
+      const trigger: Trigger = { id: key('operator-message', ticketId, at, text), source: OPERATOR_SOURCE,
+        threads: [origin.threads[0]!], actor: operatorActor, human: true, addressed: 'direct', at, text, meta: { ticketId } }
+      this.intake.receive(trigger)
+      return this.repo.tickets.get(ticketId)!
+    })
+  }
   /** The candidate of the Eval that holds a Trigger, as its assessor sees it; undefined while no Eval holds it. */
   candidate(triggerId: string): Candidate | undefined { return this.evals.candidate(triggerId) }
   /**
@@ -260,7 +299,8 @@ export class Engine {
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
-export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'
+  | 'startTask' | 'instruct'>
 /** What people ask of the Engine, through the panel or the main Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */

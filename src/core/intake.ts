@@ -2,6 +2,7 @@
 import { key } from './ids.ts'
 import { isoTime, liveTicket, threadKey } from './model.ts'
 import type { Ticket, Trigger } from './model.ts'
+import { isOperatorTrigger } from './operator.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Tickets } from './tickets.ts'
 
@@ -22,7 +23,8 @@ export class Intake extends EnginePart {
     if (!trigger.threads.length) throw new Error('A trigger must belong to at least one thread')
     if (this.repo.triggers.get(trigger.id)) return 'duplicate'
     const at = this.now()
-    const filter = this.options.scope.scope(trigger)
+    // The operator's own Trigger reaches no Source scope: only this plugin's main-Session tools create it.
+    const filter = isOperatorTrigger(trigger) ? { listened: true as const, observed: false } : this.options.scope.scope(trigger)
     if (!filter.listened) {
       this.repo.triggers.save(trigger); this.repo.triggers.saveDisposition(trigger.id, { filtered: { code: filter.reason }, fanout: [], at })
       return 'filtered'

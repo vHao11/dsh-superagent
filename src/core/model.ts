@@ -312,7 +312,11 @@ export interface Ticket {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-export interface Execution { name: string; directory: string; assignment: string }
+/** The engine that runs a ticket's assignments: DeepSeek Harness's own agent loop, or a native persistent Claude Code process. */
+export const ENGINE_NAMES = ['dsh', 'claude-code'] as const
+export type EngineName = (typeof ENGINE_NAMES)[number]
+/** What a ticket's Executor chose for its worker: its short name, directory, assignment text, and engine. */
+export interface Execution { name: string; directory: string; assignment: string; engine?: EngineName }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

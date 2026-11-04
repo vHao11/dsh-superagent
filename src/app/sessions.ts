@@ -6,8 +6,9 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
+import { key, liveTicket, type EngineName, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { attachClaudeCode } from '../executor/claude-code.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -60,6 +61,8 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+/** The shell tool DSH registers on this platform: Windows registers `pwsh`, other platforms `bash`; `tools.restrict` refuses a name no tool registers. */
+const SHELL_TOOL = process.platform === 'win32' ? 'pwsh' : 'bash'
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -76,7 +79,7 @@ const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|
  */
 function noWait({ name, arguments: input }: { name: string; arguments: unknown }, routed: () => boolean): string | undefined {
   const args = (input ?? {}) as { command?: unknown; timeoutMs?: unknown; run_in_background?: unknown; wait?: unknown; timeout_ms?: unknown }
-  if (name === 'bash') {
+  if (name === SHELL_TOOL) {
     const sleeps = typeof args.command === 'string' && SLEEP.test(args.command)
     if (sleeps || typeof args.timeoutMs === 'number' && args.timeoutMs > 30_000) return NO_WAIT
     if (args.timeoutMs === undefined && args.run_in_background !== true && !routed()) return DEFAULT_WAIT
@@ -146,12 +149,30 @@ export class Sessions {
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    // DSH's Web UI lists only Sessions accounted to a Workspace. A Session created by an earlier
+    // run, or by DSH itself, may be missing from that account, which leaves the panel's Open
+    // buttons unable to find it; attach is idempotent once the Session is on the account.
+    await this.attachWorkspace(result.agent)
     const settings = this.host.store.settings()
-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    const ticket = role === 'worker' ? this.ticketOfId(id) : undefined
+    const engine: EngineName = role === 'worker' ? ticket?.execution?.engine ?? settings.executor.engine : 'dsh'
+    // A native Claude Code worker runs its own loop; seeding a DSH model would only add an unused selection.
+    if (engine !== 'claude-code') await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
     await this.decorate(result.agent)
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
+  }
+  /** Account `agent` to the Workspace of its cwd, which the Web UI needs to list and open it; a failure is logged, not fatal. */
+  private async attachWorkspace(agent: Agent): Promise<void> {
+    const cwd = agent.session.header?.cwd
+    if (cwd === undefined) return
+    try {
+      const workspace = await this.ctx.workspaceRegistry.resolveByPath(cwd) ?? await this.ctx.workspaceRegistry.create(cwd)
+      await workspace.attachSession(agent.id)
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not attach Session %s to its workspace: %s', agent.id, String(error))
+    }
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {
@@ -229,6 +250,14 @@ export class Sessions {
     const ticketId = ticketOfSession(agent.id)
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
+  private ticketOfId(sessionId: string): Ticket | undefined {
+    const ticketId = ticketOfSession(sessionId)
+    return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
+  }
+  /** The engine a ticket runs on: the one its acceptance stored, else the executor setting, which also covers tickets accepted before engines existed. */
+  private engineOf(ticket: Ticket): EngineName {
+    return ticket.execution?.engine ?? this.host.store.settings().executor.engine
+  }
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
@@ -237,6 +266,13 @@ export class Sessions {
     if (!master && !ticket) { this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
     this.bindings.set(agent, binding)
+    // Attach before the asynchronous prompt/skill/tool setup so a prompt that arrives while decoration runs cannot fall
+    // through to the DSH model loop. The report tool is looked up when a turn reports, by which time tool setup is done.
+    if (!master && ticket && this.engineOf(ticket) === 'claude-code') binding.disposers.push(attachClaudeCode({
+      context: this.ctx, agent, ticket, store: this.host.store,
+      settings: () => this.host.store.settings().executor, logger: this.ctx.logger, lifetime: this.host.lifetime,
+      environment: () => this.host.environment(ticket),
+    }))
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
     if (agent.status === 'idle') this.retryHealth.clear(agent.id)
     this.updateModelHealth()
@@ -260,7 +296,7 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', SHELL_TOOL, 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.

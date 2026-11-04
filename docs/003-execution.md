@@ -22,11 +22,22 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
+Each Ticket gets an Executor Session named `worker-<ticket id>`. Its directory depends on the execution directory mode. `per-ticket`, the default, creates a directory named after the Ticket's short name under the configured execution root, which defaults to `<stateDir>/work`; `fixed` runs every Ticket in the root itself. The fixed mode suits a deployment that works directly in one checkout, and concurrent Tickets then share that workspace, so their branches and files can collide.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
+
+### The worker engine
+
+Execution settings choose the engine for newly accepted Tickets; each Ticket keeps the engine recorded when it was accepted. Under `dsh`, the Executor is DeepSeek Harness's own model loop with the presets, tools and shell limits above. Under `claude-code`, one persistent native `claude` process drives the Executor Session:
+
+- The first step starts `claude` in the Ticket directory with stream-json input and output. The process stays alive across turns, so its multi-turn conversation remains native rather than a series of one-shot calls.
+- The assignment, Triggers, Inputs and messages a person types into the Session are sent as user messages. A card's `read` reference is expanded through the worker's `orchestrator_read` tool first, so the native worker sees the full request instead of only its preview. The worker uses Claude Code's own tools, skills, plugins, hooks, MCP servers and `CLAUDE.md`; DeepSeek Harness's work-tool set and shell job limits do not apply to it. The Ticket directory and prepare command still do, and the process inherits the worker command shims and git configuration, so `gh` and `lark-cli` act as the agent account and blocked commands fail by name.
+- The worker reports by ending its final message with a `DSH_REPORT` line. The host executes the worker's `orchestrator_report` tool with that report, so Ticket state, relays to the main Session and handoff rules are the same as for a DSH worker. The line is removed from the visible conversation.
+- The permission mode decides what Claude Code does without asking: `auto` reviews actions with its classifier, `default` (Manual) asks for most of them, `acceptEdits` accepts edits, `plan` only reads, and `bypassPermissions` skips the checks. A tool call the mode still routes to the bridge is answered by the approval setting: `approve` allows it without a person, `deny` refuses it, and `ask` shows a DSH question card with Allow once and Deny. The default is `auto` with `approve`, so a Ticket runs unattended. `AskUserQuestion` always becomes a question card with its options, because it asks for a decision rather than a permission.
+- The Claude Code session id is stored with the worker Session, so a restarted plugin resumes the same native conversation. A missing stored session is replaced by a fresh one and the step's messages are sent again.
+- The configured executable, model, permission mode, reasoning effort and Ultracode switch apply to new worker processes: `--effort` carries the level and `--settings '{"ultracode":true}'` turns on dynamic workflows. Without an executable, the host looks for `CLAUDE_CODE_BIN`, the per-user install, then `claude` on `PATH`.
 
 ### Background work and worker slots
 
@@ -48,7 +59,7 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 ### Preparing a Ticket directory
 
-Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory.
+Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory. In the fixed directory mode the directory is the configured root itself, so the prepare command is skipped: the deployment already points at the workspace the worker should use.
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 

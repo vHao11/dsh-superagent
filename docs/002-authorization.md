@@ -15,6 +15,12 @@ The Source records whether a message addresses the agent: `mention` for a mentio
 - Other human messages use the admission table for their receiving scope.
 - A bot on the Source's bot list can produce an inferred candidate, never an explicit request. Other bots are not admitted.
 
+### Direct tasks from the operator
+
+The person who runs this installation may also start work in the main Session itself, without a Source message, with `orchestrator_task_start`. That tool is the only writer of the internal `operator` Source: it stores a human Trigger with `addressed: direct` and accepts it at once at explicit strength, so no Eval or assessment is involved. The gate admits it without a Source allowed list or scope, because no external account can produce it, and `revalidate` keeps its Mandate while it is explicit.
+
+A follow-up sent with `orchestrator_task_message` is another operator Trigger on the Ticket's Thread, which its worker decides like any person's message. `orchestrator_task_stop` ends the Ticket on the person's stop. Tickets started this way have no Channel, so their results are reported in the main Session rather than sent to an external conversation.
+
 ### Subscriptions: continuing existing work
 
 Every message on a subscribed Thread reaches its subscribed Tickets as context, including messages from bots and CI. This delivery bypasses the gate and grants no new authority. Each Ticket remains limited by its Mandate.
@@ -130,9 +136,10 @@ Only three operations change a Mandate: accept creates it, a person's stop withd
 
 ### Revalidation before resume
 
-The Source must still listen to the original Thread. The remaining checks depend on the Mandate's basis:
+The Source must still listen to the original Thread, except for the operator's internal Source, which has no scope. The remaining checks depend on the Mandate's basis:
 
 - An explicit follow-up Mandate passes.
+- An operator Mandate passes while it is explicit.
 - An inferred Mandate needs `auto` mode and its matched rules still enabled.
 - A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell.
 - A bot's Mandate requires that bot to remain on the Source's bot list. Inferred table and bot Mandates also need `auto` mode and enabled matched rules.

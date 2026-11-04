@@ -35,7 +35,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async args => {
         const reply = host.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: args.trigger_id, text: args.text })
         if (reply.status !== 'sent') await host.sendReplies()
-        return { trigger_id: args.trigger_id, acknowledgement: host.store.replyStatus(reply.id)!, reused: reply.reused }
+        return { trigger_id: args.trigger_id, acknowledgement: host.store.replyStatus(reply.id) ?? reply.status, reused: reply.reused }
       },
     }),
     tool({

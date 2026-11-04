@@ -22,7 +22,7 @@ Overrides use these keys:
 | Parts | Keys |
 | --- | --- |
 | Shared instructions and roles | `runtime/shared`, `runtime/orchestrator`, `runtime/worker` |
-| Working instructions | `runtime/subscriptions`, `runtime/replies`, `runtime/dispatch`, `runtime/work`, `runtime/admission` |
+| Working instructions | `runtime/subscriptions`, `runtime/replies`, `runtime/dispatch`, `runtime/operator`, `runtime/work`, `runtime/admission` |
 | Handoff instructions | `runtime/handoff/orchestrator`, `runtime/handoff/worker` |
 | Source skills | `skill/feishu`, `skill/github` |
 | Generated sections | `runtime/environment`, `runtime/policy`, `runtime/policy/none` |

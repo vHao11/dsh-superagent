@@ -7,7 +7,7 @@ import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
-import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
+import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { localized } from './text.ts'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
 
@@ -96,6 +96,47 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          <Section title={t('executorEngine')} hint={t('executorEngineHint')}>
+            <Field label={t('executorEngine')}>
+              <select className="dt-select" value={value.engine} onChange={event => edit({ engine: event.target.value as typeof value.engine })}>
+                <option value="dsh">{t('engine.dsh')}</option>
+                <option value="claude-code">{t('engine.claude-code')}</option>
+              </select>
+            </Field>
+            {value.engine === 'claude-code' && <>
+              <Field label={t('claudeBin')} hint={t('claudeBinHint')}>
+                <Input className="dt-mono" value={value.claudeBin} placeholder="claude" spellCheck={false}
+                  onChange={event => edit({ claudeBin: event.target.value })} />
+              </Field>
+              <Field label={t('claudeModel')} hint={t('claudeModelHint')}>
+                <Input className="dt-mono" value={value.claudeModel} spellCheck={false}
+                  onChange={event => edit({ claudeModel: event.target.value })} />
+              </Field>
+              <Field label={t('claudePermissionMode')} hint={t('claudePermissionModeHint')}>
+                <select className="dt-select" value={value.claudePermissionMode}
+                  onChange={event => edit({ claudePermissionMode: event.target.value as typeof value.claudePermissionMode })}>
+                  {(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const).map(mode =>
+                    <option key={mode} value={mode}>{t(`claudeMode.${mode}`)}</option>)}
+                </select>
+              </Field>
+              <Field label={t('claudeApproval')} hint={t('claudeApprovalHint')}>
+                <select className="dt-select" value={value.claudeApproval}
+                  onChange={event => edit({ claudeApproval: event.target.value as typeof value.claudeApproval })}>
+                  {(['approve', 'ask', 'deny'] as const).map(choice =>
+                    <option key={choice} value={choice}>{t(`claudeApproval.${choice}`)}</option>)}
+                </select>
+              </Field>
+              <Field label={t('claudeEffort')} hint={t('claudeEffortHint')}>
+                <select className="dt-select" value={value.claudeEffort}
+                  onChange={event => edit({ claudeEffort: event.target.value as typeof value.claudeEffort })}>
+                  {(['', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map(level =>
+                    <option key={level} value={level}>{t(`claudeEffort.${level || 'default'}`)}</option>)}
+                </select>
+              </Field>
+              <SwitchRow label={t('claudeUltracode')} hint={t('claudeUltracodeHint')} checked={value.claudeUltracode}
+                onChange={claudeUltracode => edit({ claudeUltracode })} />
+            </>}
+          </Section>
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
@@ -103,12 +144,20 @@ export function ExecutionSettings() {
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>
-          <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
-            : t('executionDirectoryDefault', { root: environment.root })}>
+          <Field label={t('directoryMode')} hint={t('directoryModeHint')}>
+            <select className="dt-select" value={value.directoryMode}
+              onChange={event => edit({ directoryMode: event.target.value as typeof value.directoryMode })}>
+              {(['per-ticket', 'fixed'] as const).map(mode =>
+                <option key={mode} value={mode}>{t(`directoryMode.${mode}`)}</option>)}
+            </select>
+          </Field>
+          <Field label={t('executionDirectory')} hint={value.directoryMode === 'fixed' ? t('executionDirectoryFixedHint')
+            : t('executionDirectoryHint')} note={value.directory ? undefined : t('executionDirectoryDefault', { root: environment.root })}>
             <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"
               onChange={event => edit({ directory: event.target.value })} />
           </Field>
-          <Field label={t('prepareCommand')} hint={t('prepareCommandHint')}>
+          <Field label={t('prepareCommand')} hint={t('prepareCommandHint')} note={value.directoryMode === 'fixed'
+            ? t('prepareCommandFixed') : undefined}>
             <textarea ref={prepare} className="dt-textarea dt-mono" rows={3} maxLength={LIMITS.prepareCommand} spellCheck={false}
               placeholder={t('prepareCommandEmpty')} value={value.prepare}
               onChange={event => edit({ prepare: event.target.value })} />

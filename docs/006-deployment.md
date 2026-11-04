@@ -123,6 +123,12 @@ A Source that is still starting counts as normal operation. So does a Feishu bot
 
 `status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines; they exit 1 if the service never comes up. Only an intentional `stop` pauses automatic recovery.
 
+### Windows
+
+The commands above use tmux. On Windows run `scripts/dsh-superagent.ps1 start|status|stop|restart` in PowerShell instead; it takes `-Profile` and `-Port`, starts the profile detached, writes startup logs under `%USERPROFILE%\.dsh\.artifacts`, and prints the panel URL with its token. Stopping with the script ends the process outright, so prefer Ctrl+C in a terminal running `dsh --profile superagent` when a graceful shutdown matters.
+
+Name paths the Windows way: `stateDir` as `C:/Users/me/.dsh/state/superagent`, and the agent CLI as an absolute `.exe`, because a `.cmd` wrapper cannot be started without a shell. Set `GH_CONFIG_DIR` to the agent's configuration directory instead of wrapping `gh`. Worker and prepare commands need `sh` on `PATH`; install Git for Windows and add its `bin` directory. The worker command shims are POSIX scripts, so they apply to workers that run through a shell such as Git Bash, and not to native Windows command resolution.
+
 Each profile stores logs and control files under `.artifacts/`:
 
 - Startup logs: `dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
