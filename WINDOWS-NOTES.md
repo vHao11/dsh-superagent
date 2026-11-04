@@ -100,4 +100,3 @@ DSH NEXT 里装了配套面板插件 `@dsh-external/dsh-superagent-panel`（侧�
 
 验证：把 PATH 收缩为 `C:\Windows\System32;C:\Windows;C:\Program Files\nodejs` 后再 `restart`，
 服务照常起来且 `setup: null`（对照：修复前同样条件卡在 `spawn env ENOENT`）。
-

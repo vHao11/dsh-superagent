@@ -1,0 +1,17 @@
+# Repository-wide line ending policy.
+# Text files are stored and checked out as LF.
+* text=auto eol=lf
+
+# Windows command/PowerShell scripts need CRLF when checked out.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pdf binary
