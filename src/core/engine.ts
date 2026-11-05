@@ -97,7 +97,12 @@ export class Engine {
   startTask(task: OperatorTask): Decision {
     return this.repo.atomic(() => {
       const at = this.options.now?.() ?? new Date().toISOString()
-      const id = key('operator-task', at, task.title, task.request, task.engine ?? '', task.taskType ?? '', task.name ?? '')
+      // An idempotency key (a dispatcher's requestId) makes the Trigger's id stable across retries, so Intake records the
+      // repeat as a duplicate and `Evals.decide` returns the Decision the first attempt recorded instead of starting another
+      // ticket. Without one the timestamp keeps spacing otherwise identical tasks apart.
+      const id = task.idempotencyKey
+        ? key('operator-task', task.idempotencyKey, task.title, task.request, task.engine ?? '', task.taskType ?? '', task.name ?? '')
+        : key('operator-task', at, task.title, task.request, task.engine ?? '', task.taskType ?? '', task.name ?? '')
       const trigger: Trigger = { id, source: OPERATOR_SOURCE, threads: [{ source: OPERATOR_SOURCE, id }], actor: operatorActor,
         human: true, addressed: 'direct', at, text: task.request, meta: { title: task.title } }
       this.intake.receive(trigger)

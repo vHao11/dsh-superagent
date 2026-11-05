@@ -8,10 +8,11 @@ import { sourceSkills } from './context.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
-import { policyVersion } from '../policy.ts'
+import { classifyTaskType, policyVersion, unclassifiedTaskTypeError } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
-import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
+import { WorktreeNameSchema } from './assessment.ts'
+import { ENGINE_NAMES, UserError, type Engine, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
@@ -19,14 +20,14 @@ import type { SourceRegistry } from '../sources/registry.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
-import type { LinkTarget, ViewHost } from './views/records.ts'
+import { snapshot, type LinkTarget, type ViewHost } from './views/records.ts'
 import type { Variable } from './execution-environment.ts'
 import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
-import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import { executorLoad, ticketDetail, ticketList, ticketRow } from './views/tickets.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -36,7 +37,7 @@ export interface HttpHost {
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
-  readonly engine: EngineForPeople
+  readonly engine: EngineForPeople & Pick<Engine, 'startTask'>
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
   readonly machine: Machine
@@ -58,7 +59,7 @@ export interface HttpHost {
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
  * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
  */
-class RouteError extends Error { constructor(readonly status: 400 | 404, message: string) { super(message) } }
+class RouteError extends Error { constructor(readonly status: 400 | 404 | 500, message: string) { super(message) } }
 async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
   let size = 0; const chunks: Buffer[] = []
   for await (const chunk of req) {
@@ -148,6 +149,15 @@ const PromptsQuery = z.object({ revision: count.optional(), offset: count.defaul
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+/** A task the kanban dispatches: the operator task's fields plus a `requestId` used as the idempotency key. */
+const TaskRequest = z.object({
+  title: z.string().trim().min(1).max(200),
+  request: z.string().trim().min(1).max(20000),
+  taskType: z.string().trim().max(64).optional(),
+  engine: z.enum(ENGINE_NAMES).optional(),
+  name: WorktreeNameSchema.optional(),
+  requestId: z.string().trim().min(1).max(200).optional(),
+}).strict()
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
@@ -194,6 +204,23 @@ function routes(runtime: HttpHost): Routes {
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'POST tasks': async ({ body }) => {
+      const task = TaskRequest.parse(await body())
+      const settings = store.settings()
+      // With task types configured, work cannot proceed unclassified: the caller must name one, as the main-Session tool requires.
+      if (settings.executor.taskTypes.length > 0) {
+        const choice = classifyTaskType(settings, { explicit: task.taskType })
+        if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
+      }
+      const decision = runtime.engine.startTask({ title: task.title, request: task.request, name: task.name ?? 'kanban-task',
+        ...(task.engine ? { engine: task.engine } : {}), ...(task.taskType ? { taskType: task.taskType } : {}),
+        ...(task.requestId ? { idempotencyKey: task.requestId } : {}) })
+      runtime.requestPass()
+      const ticket = decision.ticketId ? store.tickets.get(decision.ticketId) : undefined
+      if (!decision.ticketId || !ticket) throw new RouteError(500, 'The task was recorded but its ticket could not be read')
+      return { decisionId: decision.id, ticketId: decision.ticketId, ticket: ticketRow(snapshot(views(runtime)), ticket),
+        ...(task.requestId ? { requestId: task.requestId } : {}) }
+    },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)

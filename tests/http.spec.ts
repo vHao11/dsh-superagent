@@ -4,7 +4,8 @@ import { registerHttp } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
-import { SettingsSchema } from '../src/policy.ts'
+import { Engine, MemoryRepositories, type SourceScope } from '../src/core/index.ts'
+import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
@@ -23,6 +24,28 @@ function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.
     await handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
+}
+
+/**
+ * Mount the management routes on a real Engine over in-memory repositories, as the host mounts them: task creation runs
+ * through Intake and Evals, and each call advances the clock so a retry is a genuinely later attempt.
+ */
+function taskRuntime(settings: Record<string, unknown> = {}) {
+  const parsed = SettingsSchema.parse(settings)
+  const repo = new MemoryRepositories()
+  const scope: SourceScope = { scope: () => ({ listened: true, observed: false }) }
+  let clock = 0
+  const engine = new Engine({ repo, scope, policy: () => settingsPolicy(parsed, scope),
+    assessor: { request: () => {}, release: () => {} },
+    executor: { start: () => {}, deliver: () => {}, stop: () => {} },
+    outbox: { send: () => {}, status: () => undefined, withdraw: () => {} },
+    now: () => new Date(Date.UTC(2026, 10, 5, 0, 0, clock++)).toISOString() })
+  // The route reads settings and ticket views from the store; in-memory repositories keep the same tickets the Engine wrote.
+  const store = Object.assign(repo, { settings: () => parsed, read: { subscribedThreads: () => [] } })
+  const passes: number[] = []
+  const call = serve({ store, engine, sources: { kind: () => undefined }, links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    requestPass: () => { passes.push(1) }, health: {}, machine: {} })
+  return { call, repo, passes }
 }
 
 it('answers each kind of failure with its own status', async () => {
@@ -95,4 +118,57 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('starts a task through the management API and echoes its ticket and request id', async () => {
+  const { call, repo, passes } = taskRuntime()
+  const response = await call('POST', 'tasks', { title: 'Fix login', request: 'Fix the login redirect', name: 'fix-login',
+    requestId: 'kanban:tb-1:1' })
+  expect(response.status).toBe(200)
+  const body = response.body as { decisionId: string; ticketId: string; ticket: Record<string, unknown>; requestId?: string }
+  expect(body.requestId).toBe('kanban:tb-1:1')
+  expect(body.decisionId).toEqual(expect.any(String))
+  // The ticket row the panel reads: id, stage, action and old/new state, as sync maps it back onto the board item.
+  expect(body.ticket).toMatchObject({ id: body.ticketId, title: 'Fix login', stage: 'working', action: 'queued', state: 'open' })
+  expect(repo.tickets.list()).toHaveLength(1)
+  expect(passes).toHaveLength(1)
+})
+
+it('returns the first decision and ticket when the request id repeats', async () => {
+  const { call, repo } = taskRuntime()
+  const task = { title: 'Fix login', request: 'Fix the login redirect', requestId: 'kanban:tb-1:1' }
+  const first = await call('POST', 'tasks', task)
+  // The second attempt is later by the clock, so only the request id can make it a duplicate.
+  const second = await call('POST', 'tasks', task)
+  expect(first.status).toBe(200)
+  expect(second.status).toBe(200)
+  expect(second.body).toMatchObject({ decisionId: first.body.decisionId, ticketId: first.body.ticketId })
+  expect(repo.tickets.list()).toHaveLength(1)
+  // A new attempt is a new request id, which starts its own ticket.
+  const third = await call('POST', 'tasks', { ...task, requestId: 'kanban:tb-1:2' })
+  expect(third.status).toBe(200)
+  expect(third.body.ticketId).not.toBe(first.body.ticketId)
+})
+
+it('refuses a task body the kanban dispatch cannot send', async () => {
+  const { call, repo } = taskRuntime()
+  for (const body of [{ request: 'Fix it' }, { title: '   ', request: 'Fix it' }, { title: 'Fix it', request: '' },
+    { title: 'Fix it', request: 'Do it', name: 'not a name' }, { title: 'Fix it', request: 'Do it', name: 'x'.repeat(33) },
+    { title: 'Fix it', request: 'Do it', engine: 'gpt' }, { title: 'Fix it', request: 'Do it', requestId: '   ' }]) {
+    expect(await call('POST', 'tasks', body), JSON.stringify(body)).toMatchObject({ status: 400 })
+  }
+  expect(repo.tickets.list()).toHaveLength(0)
+})
+
+it('requires a configured task type and refuses an unknown one', async () => {
+  const types = { executor: { taskTypes: [{ id: 'fix', name: 'Fix defects', description: 'Fix defects', directory: '/work/fix' }] } }
+  const { call, repo } = taskRuntime(types)
+  expect(await call('POST', 'tasks', { title: 'Fix it', request: 'Fix the defect' }))
+    .toMatchObject({ status: 400, body: { code: 'unclassifiedWork' } })
+  expect(await call('POST', 'tasks', { title: 'Fix it', request: 'Fix the defect', taskType: 'gone' }))
+    .toMatchObject({ status: 400, body: { code: 'unknownTaskType' } })
+  expect(repo.tickets.list()).toHaveLength(0)
+  // A configured id classifies the work explicitly and creates its ticket.
+  expect((await call('POST', 'tasks', { title: 'Fix it', request: 'Fix the defect', taskType: 'fix' })).status).toBe(200)
+  expect(repo.tickets.list()).toHaveLength(1)
 })
