@@ -108,7 +108,9 @@ function TaskTypesEditor({ taskTypes, onChange }: {
           <span className="dt-field-head">{t('taskTypeSelect')}</span>
           <span className="dt-subhead-actions">
             <Button variant="ghost" size="sm" icon={<Icon name="plus" />} onClick={add}>{t('taskTypeAdd')}</Button>
-            <Button variant="ghost" size="sm" icon={<Icon name="trash" />} onClick={() => remove(index)}>{t('taskTypeRemove')}</Button>
+            <ConfirmButton variant="ghost" icon="trash" label={t('taskTypeRemove')} title={t('taskTypeRemoveTitle')}
+              message={t('taskTypeRemoveConfirm', { name: type.name || type.id || t('empty') })}
+              onConfirm={async () => { remove(index) }} />
           </span>
         </div>
         <select className="dt-select" aria-label={t('taskTypeSelect')} value={String(index)}

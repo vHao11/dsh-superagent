@@ -98,11 +98,20 @@ it('edits one task type at a time from a selector, folding the others and keepin
   expect(field<HTMLTextAreaElement>(zh.taskTypeInstructions).value).toBe('')
   await type(selector(), '1')
   expect(field<HTMLTextAreaElement>(zh.taskTypeInstructions).value).toBe('只改集中交易相关代码')
-  // Adding opens the new type; removing it selects a remaining one.
+  // Adding opens the new type; removing it asks once more, and cancelling keeps the type.
   await click(zh.taskTypeAdd)
   expect([...selector().querySelectorAll('option')]).toHaveLength(4)
   expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('custom-4')
   await click(zh.taskTypeRemove)
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(`删除“custom-4”`)
+  expect([...selector().querySelectorAll('option')]).toHaveLength(4)
+  await click(zh.cancel)
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect([...selector().querySelectorAll('option')]).toHaveLength(4)
+  // Confirming the removal drops the type and selects a remaining one.
+  await click(zh.taskTypeRemove)
+  await click(zh.confirm)
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect([...selector().querySelectorAll('option')]).toHaveLength(3)
   expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('zrt')
   await click(zh.save)

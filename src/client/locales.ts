@@ -416,6 +416,8 @@ const TEXT = {
   taskTypeSelect: ['选择任务类型', 'Choose a task type'],
   taskTypeAdd: ['添加任务类型', 'Add task type'],
   taskTypeRemove: ['删除此类型', 'Remove this type'],
+  taskTypeRemoveTitle: ['删除任务类型', 'Remove task type'],
+  taskTypeRemoveConfirm: ['删除“{name}”？保存后才生效：分拣器不再提供这个类型；已归到该类型的工单保留原有分类和执行配置。', 'Remove "{name}"? It takes effect once saved: the sorter stops offering the type, and Tickets already classified as it keep their classification and execution settings.'],
   taskTypeEmpty: ['还没有任务类型；点“添加任务类型”开始。', 'No task types yet; add one to start.'],
   taskTypeSourceExplicit: ['分拣指定', 'Sorter specified'],
   taskTypeSourceSource: ['来源默认', 'Source default'],
