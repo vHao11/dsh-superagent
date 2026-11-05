@@ -47,6 +47,17 @@ it('builds a human Trigger on the conversation thread, with a stable id and the 
   expect(trigger.meta).toMatchObject({ sid: 'c1', priority: 'high', type: 'chat', unread: 2, reasons: ['mention'] })
 })
 
+it('joins the capture tool\'s context message list into the Trigger text', () => {
+  // The real UME export stores `context` as message objects, not a string; the latest conversation text is what a candidate needs.
+  const exportRow = { sid: 123, last_time: '2026-11-03T16:03:59.920000+08:00', chatter_id: 'alice', name: 'group A',
+    context: [{ sender: 'alice', text: 'first line', at: '2026-11-03T15:00:00+08:00' },
+      { sender: { id: 'u2', name: 'Bob' }, text: 'latest line', at: '2026-11-03T16:03:59+08:00' }], last_mine: false }
+  const trigger = umeTrigger(exportRow, file)!
+  expect(trigger.text).toBe('alice: first line\nBob: latest line')
+  expect(trigger.threads).toEqual([{ source: 'ume', id: '123' }])
+  expect(trigger.meta).toMatchObject({ sid: '123', name: 'group A' })
+})
+
 it('skips conversations whose latest message is ours and reports a missing or malformed export', async () => {
   const { context: ctx, received } = context()
   writeFileSync(file, JSON.stringify([row('c1', '2026-11-05T01:00:00Z', { last_mine: true })]))

@@ -901,6 +901,16 @@ describe('the Executor\'s parts', () => {
     expect(execution.assignment).toContain('- Copy fixes (copy): Fix typos only.')
     expect(mandateInstructions({ strength: 'explicit' })).toBe('')
   })
+  it('accepts a source Trigger without a model-chosen worktree name, such as a BQA question', () => {
+    const settings = SettingsSchema.parse({ executor: { taskTypes: [{ id: 'consult', name: 'BQA questions',
+      description: 'Business questions from BQA', directory: '/srv/bqa-space', directoryMode: 'fixed' }] } })
+    const ticket = { id: 'ticket-0123456789abcdef', origin: { triggerId: 'tr1', triggerIds: [] },
+      mandate: { strength: 'explicit', policyVersion: 'v1', basis: {}, actor: { source: 'bqa', id: 'u1' }, scope: '' } } as unknown as Ticket
+    const execution = ticketExecution(ticket, { kind: 'accept', title: '业务问题', scope: '业务问题', reason: 'sourceAccepted' } as never,
+      settings, '/state', 'consult')
+    expect(execution).toEqual(expect.objectContaining({ name: 'ticket-ticket-01234', directory: '/srv/bqa-space',
+      taskType: 'consult', taskTypeSource: 'source' }))
+  })
   it('renders each kind of Input as its worker reads it, inline, and no reopen Input', () => {
     const asked = { id: 'tr1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om_1' }], actor: { source: 'feishu', id: 'ou_a' }, human: true,
       at: '2026-09-01T00:00:00Z', text: 'Which page?', meta: {} } as Trigger

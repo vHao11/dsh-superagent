@@ -99,7 +99,9 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
  */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
   stateDir: string, sourceDefault?: string): Execution {
-  const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
+  // A Source acceptance carries no model-chosen worktree name, so fall back to a valid generic name instead of refusing
+  // the ticket: fixed-directory task types (such as a BQA question) never use it as a directory name.
+  const name = ticketWorktreeName(outcome.name?.trim() || 'ticket', ticket.id)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
   const ruleIds = ticket.mandate.basis.rules
