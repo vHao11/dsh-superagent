@@ -97,12 +97,13 @@ export class Engine {
   startTask(task: OperatorTask): Decision {
     return this.repo.atomic(() => {
       const at = this.options.now?.() ?? new Date().toISOString()
-      const id = key('operator-task', at, task.title, task.request, task.engine ?? '', task.name ?? '')
+      const id = key('operator-task', at, task.title, task.request, task.engine ?? '', task.taskType ?? '', task.name ?? '')
       const trigger: Trigger = { id, source: OPERATOR_SOURCE, threads: [{ source: OPERATOR_SOURCE, id }], actor: operatorActor,
         human: true, addressed: 'direct', at, text: task.request, meta: { title: task.title } }
       this.intake.receive(trigger)
       return this.evals.decide(id, { kind: 'accept', title: task.title, scope: task.title, reason: { code: 'operatorTask' },
-        ...(task.name ? { name: task.name } : {}), ...(task.engine ? { engine: task.engine } : {}) })
+        ...(task.name ? { name: task.name } : {}), ...(task.engine ? { engine: task.engine } : {}),
+        ...(task.taskType ? { taskType: task.taskType } : {}) })
     })
   }
   /**

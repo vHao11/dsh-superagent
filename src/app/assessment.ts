@@ -26,6 +26,7 @@ export const AssessmentSchema = z.object({
   direction: AdmissionDirectionSchema.describe('Required for every decision.'),
   title: z.string().min(1).max(160),
   worktree_name: WorktreeNameSchema.optional(),
+  taskType: z.string().trim().max(64).optional().describe('The id of one task type from the Task types prompt section; required for an accept when task types are configured and the Source sets no default. Work cannot proceed unclassified.'),
   scope: z.string().max(1500),
   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
@@ -270,9 +271,10 @@ export class MasterAssessor implements Assessor {
   }
   /** Converts the assessment into an outcome under current settings and passes it to `Engine.decide` for policy verification. */
   async decide(triggerId: string, result: z.infer<typeof AssessmentSchema>, signal?: AbortSignal): Promise<{ state: string; ticket_id?: string; reason: string }> {
-    const { candidate } = this.evalFor(triggerId)
+    const { candidate, trigger } = this.evalFor(triggerId)
     signal?.throwIfAborted()
-    let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength)
+    // The Trigger's Source may configure a default type, which classifies work the assessment leaves untyped.
+    let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength, trigger.taskType)
     if (outcome.kind === 'accept' && outcome.acknowledgement) outcome = { ...outcome, acknowledgement: checkedImText(outcome.acknowledgement) }
     const decision = this.host.engine.decide(triggerId, { ...outcome, evalId: candidate.evalId })
     return { state: decision.kind, ...(decision.ticketId ? { ticket_id: decision.ticketId } : {}), reason: reasonText(decision.reason) }

@@ -1,26 +1,31 @@
 # Windows 运行说明（本地适配）
 
-这个目录是 `deepseek-ai/dsh-superagent-prototype` 的克隆，并按本机（Windows）做了少量适配。
-原型的服务脚本 `scripts/dsh-superagent` 是 Python + `tmux` + `fcntl`，Windows 上无法运行；其余部署步骤与
-`docs/006-deployment.md` 一致。
+这个目录是 `deepseek-ai/dsh-superagent-prototype` 的克隆，并按本机（Windows）做了适配。
+原型的服务脚本 `scripts/dsh-superagent` 是 Python + `tmux` + `fcntl`，Windows 上无法运行，已换成
+`scripts/dsh-superagent.mjs` + `.cmd`；其余部署步骤与 `docs/006-deployment.md` 一致。
 
-## 本机安装位置
+把**另一台 Windows 机器**换成这份代码的步骤见 [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)。
+
+## 本机（这台开发机）安装位置
 
 | 项 | 值 |
 | --- | --- |
-| 隔离的 DSH CLI | `%USERPROFILE%\src\dsh-cli`（`@deepseek-ai/dsh` 0.2.1-rc.3；全局 `dsh` 仍是 0.2.1-rc.2，未改动） |
-| profile | `~/.dsh/profiles/superagent`（面板端口 **3082**） |
-| stateDir | `%USERPROFILE%\.dsh\state\superagent` |
-| 工作副本（prepare 用它建 worktree） | `%USERPROFILE%\src\superagent-playground` |
-| agent 账号 | `<agent-account>` |
-| agent 的 gh 配置目录 | `%USERPROFILE%\.config\gh-agent`（通过 `GH_CONFIG_DIR`，不碰操作者自己的 gh） |
+| DSH CLI | 全局 `@deepseek-ai/dsh` 0.2.1-rc.5（`C:\Users\guosen\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh`） |
+| `DSH_HOME` | `D:\aiworkspace\dsh-data`（不是默认 `%USERPROFILE%\.dsh`） |
+| 加载本插件的 profile | `web`（面板原生集成在 DSH Web，端口 3080）与 `superagent`（独立面板服务，由 `scripts\dsh-superagent.cmd` 管理） |
+| 依赖写法 | 两个 profile 的 `package.json` 都是 `"dsh-superagent": "link:D:/aiworkspace/dsh-superagent-prototype"` |
+| stateDir | `D:\aiworkspace\dsh-data\state\superagent`（web profile 在 `cordis.patch.yml` 里配置） |
+| 工作副本（prepare 用它建 worktree） | `D:\aiworkspace\superagent-playground` |
+| agent 的 gh 配置目录 | 通过 `GH_CONFIG_DIR` 指向独立目录，不碰操作者自己的 gh 登录 |
 
 `GH_CONFIG_DIR` 和 DSH 入口写在 `.artifacts/service-env.json`，启动器 spawn 时注入。
+
+改 `src/` 之后必须重新构建 `lib/`（见 [GIT-WORKFLOW.md](GIT-WORKFLOW.md)），DSH 运行时只读 `lib/`。
 
 ## 启动 / 停止 / 状态
 
 ```powershell
-cd "$env:USERPROFILE\src\dsh-superagent-prototype"
+cd D:\aiworkspace\dsh-superagent-prototype
 node scripts\dsh-superagent.mjs status  --profile superagent   # 0 正常 / 1 未运行或出错 / 2 部件报错 / 3 等 setup
 node scripts\dsh-superagent.mjs start   --profile superagent
 node scripts\dsh-superagent.mjs stop    --profile superagent

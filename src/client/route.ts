@@ -12,7 +12,7 @@ export type Route = { page: 'overview' | 'source'; id?: undefined; query?: undef
   | { page: 'trigger'; id?: undefined; query?: { filter?: ThreadFilter } }
   | { page: 'trigger'; id: string; query?: { trigger?: string } }
   | { page: 'eval'; id?: undefined; query?: { filter?: DecisionFilter; window?: '24h' } }
-  | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter } }
+  | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter; taskType?: string } }
   | { page: 'execution'; id: string; query?: undefined }
   | { page: 'settings'; id?: undefined; query: { group: SettingsGroup; source?: string; version?: string } }
 export const HOME: Route = { page: 'overview' }
@@ -39,7 +39,8 @@ export function parseRoute(value: unknown): Route | undefined {
       : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
     case 'eval': return { page, query: compact({ filter: pick(DECISION_FILTERS, query?.filter),
       window: query?.window === '24h' ? '24h' as const : undefined }) }
-    case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter) }) }
+    case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter),
+      taskType: /^[a-z][a-z0-9-]{0,63}$/.test(text('taskType') ?? '') ? text('taskType') : undefined }) }
     case 'settings': return { page, query: { group: pick(SETTINGS_GROUPS, query?.group) ?? 'source',
       ...compact({ source: text('source'), version: text('version') }) } }
     default: return undefined

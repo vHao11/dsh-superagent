@@ -47,7 +47,7 @@ it('rereads the chats the bot has joined on request and says which are new, keep
   expect(server.requests.find(request => request.path === 'sources/feishu/labels')).toMatchObject({ method: 'POST' })
   expect(document.querySelector('.dt-toast')?.textContent).toBe('列表已更新，新增：新群')
   // The row being added stays, and now offers the new chat.
-  const pick = feishu().querySelectorAll('.dt-rows-item')[1]!.querySelector<HTMLSelectElement>('select[aria-label="选择机器人已加入的群"]')!
+  const pick = feishu().querySelectorAll('.dt-rows-item:not(.dt-rows-head)')[1]!.querySelector<HTMLSelectElement>('select[aria-label="选择机器人已加入的群"]')!
   expect([...pick.options].map(option => option.textContent)).toEqual(['选择机器人已加入的群', '另一个群', '新群'])
   await click(button())
   expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.labelsCurrent)
@@ -68,7 +68,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
   await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '添加')!)
-  const rows = feishu.querySelectorAll('.dt-rows-item')
+  const rows = feishu.querySelectorAll('.dt-rows-item:not(.dt-rows-head)')
   // A saved chat shows its name; a row being added picks from the joined chats not yet configured.
   expect(rows[0]!.querySelector('.dt-row-label')?.textContent).toBe('团队群')
   expect(rows[0]!.querySelector('select[aria-label="选择机器人已加入的群"]')).toBeNull()
@@ -99,7 +99,7 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   const github = all('.dt-card')[1]!
   expect(github.textContent).toContain('当前账号 @agent-bot')
   const labels = () => [...github.querySelectorAll('label')].map(label => label.textContent)
-  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI'])
+  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型'])
   expect(field<HTMLInputElement>('监听的仓库').value).toBe('acme/widgets')
   // A fact describes the saved value, so an edited CLI shows none until it is saved.
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), 'gh-other')
@@ -107,7 +107,7 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   await click(zh.discard)
   expect(github.textContent).toContain('当前账号 @agent-bot')
   await click([...github.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes('高级'))!)
-  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '轮询间隔 / 秒', '连续失败几次后报告异常'])
+  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型', '轮询间隔 / 秒', '连续失败几次后报告异常'])
   expect(all('.dt-card')[0]!.textContent).toContain('当前机器人 Widgets Bot')
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), '/opt/bin/gh-agent')
   expect(github.textContent).toContain('保存会重启 dsh-superagent：2 个进行中的派工会中断，并带恢复说明重新开始。')

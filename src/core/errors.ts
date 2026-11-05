@@ -3,6 +3,8 @@ export const USER_ERRORS = {
   unknownTicket: ['missing', 'Unknown ticket'],
   unknownProblem: ['missing', 'Unavailable Eval not found'],
   unknownTrigger: ['missing', 'Unknown trigger'],
+  unknownTaskType: ['refused', 'Unknown task type {type}; choose one of: {types}'],
+  unclassifiedWork: ['refused', 'Work cannot proceed unclassified: choose a task type ({types}); if none fits, do not accept the work'],
   unknownAssignment: ['missing', 'Unknown assignment'],
   unknownBlock: ['missing', 'Unknown settings block: {block}'],
   unknownPromptRevision: ['missing', 'Unknown prompt revision {revision}'],

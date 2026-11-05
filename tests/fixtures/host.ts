@@ -255,6 +255,8 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
     policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } },
+    // Existing tests exercise the legacy single-directory executor; task-type tests seed their own types.
+    executor: { ...settings.executor, taskTypes: [] },
     sources: { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
 

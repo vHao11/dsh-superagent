@@ -34,6 +34,8 @@ export interface Trigger {
   text: string
   channel?: ChannelRef
   url?: string
+  /** The Source's configured default task type for this Trigger, set when the Source receives it; classification uses it when nothing explicit is given. */
+  taskType?: string
   /** Source-native details for adapters; the core never interprets them. */
   meta: Record<string, unknown>
 }
@@ -315,8 +317,24 @@ export interface Follow { thread: string; own: boolean; closed?: { at: string; o
 /** The engine that runs a ticket's assignments: DeepSeek Harness's own agent loop, or a native persistent Claude Code process. */
 export const ENGINE_NAMES = ['dsh', 'claude-code'] as const
 export type EngineName = (typeof ENGINE_NAMES)[number]
-/** What a ticket's Executor chose for its worker: its short name, directory, assignment text, and engine. */
-export interface Execution { name: string; directory: string; assignment: string; engine?: EngineName }
+/** How a Ticket's task type was chosen: explicitly by the operator or sorter, its Source's configured default, the assessor's classification, or no task types configured (legacy). */
+export type TaskTypeSource = 'explicit' | 'source' | 'model' | 'legacy'
+/** What a ticket's Executor chose for its worker: its short name, directory, assignment text, engine, and task-type profile. */
+export interface Execution {
+  name: string; directory: string; assignment: string; engine?: EngineName
+  /** The user-defined task type chosen for this ticket, when task types are configured. */
+  taskType?: string
+  /** How `taskType` was chosen; absent only on tickets accepted before classification was recorded. */
+  taskTypeSource?: TaskTypeSource
+  /** The directory mode this ticket's type used; fixed types skip the prepare command. */
+  directoryMode?: 'per-ticket' | 'fixed'
+  /** The effective worker model, after the type's model or the executor's model was applied. */
+  model?: ExecutionModel | null
+  /** Instructions snapshotted from the task type, appended to the worker system prompt. */
+  instructions?: string
+}
+/** The model a Ticket's worker was accepted with, snapshotted so a later settings change does not move it. */
+export interface ExecutionModel { provider: string; model: string; reasoningEffort?: string }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

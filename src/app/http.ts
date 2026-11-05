@@ -35,7 +35,7 @@ export interface HttpHost {
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
@@ -105,7 +105,7 @@ function setupView(runtime: HttpHost) {
 export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
-    maxWorkers: settings.executor.maxWorkers },
+    maxWorkers: settings.executor.maxWorkers }, taskTypes: settings.executor.taskTypes.map(({ id, name }) => ({ id, name })),
     masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
@@ -137,7 +137,8 @@ interface Input<K extends keyof Api> {
 type Routes = { [K in keyof Api]: (input: Input<K>) => ApiResponse<K> | Promise<ApiResponse<K>> }
 const offset = z.coerce.number().int().nonnegative().catch(0)
 const limit = (fallback: number, max: number) => z.coerce.number().int().positive().catch(fallback).transform(value => Math.min(max, value))
-const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
+const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), taskType: z.string().trim().max(64).optional(),
+  offset, limit: limit(20, 1000) })
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
@@ -159,6 +160,7 @@ function routes(runtime: HttpHost): Routes {
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
+    'GET settings/:block': ({ params }) => runtime.settings.block(params.block),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {
       const { filter, offset, limit } = ThreadsQuery.parse(query)
@@ -186,8 +188,8 @@ function routes(runtime: HttpHost): Routes {
     },
     'POST decisions/:id/dismiss': ({ params }) => { runtime.engine.dismiss(params.id); return { dismissed: true } },
     'GET tickets': ({ query }) => {
-      const { state, offset, limit } = TicketsQuery.parse(query)
-      return ticketList(views(runtime), state, offset, limit)
+      const { state, taskType, offset, limit } = TicketsQuery.parse(query)
+      return ticketList(views(runtime), state, offset, limit, taskType)
     },
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },

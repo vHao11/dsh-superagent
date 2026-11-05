@@ -26,8 +26,10 @@ it('opens the Decisions under Policy from the flow line with their reasons, Deci
 
 it('keeps a Policy draft across remounts, and merges another save into it sender by sender and rule by rule', async () => {
   const addUser = async () => {
-    await click(all('.dt-part button').find(button => button.textContent === '添加')!)
-    const row = all('.dt-part .dt-rows-item').at(-1)!
+    const add = all('.dt-part button').find(button => button.textContent === '添加')!
+    await click(add)
+    // The list renders a header row too; the row being added is the last data row of the list the button belongs to.
+    const row = [...add.closest('.dt-field')!.querySelectorAll('.dt-rows-item:not(.dt-rows-head)')].at(-1)!
     await type(row.querySelector<HTMLInputElement>('input[aria-label="open_id"]')!,
       'ou_newperson'); await type(row.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '新人')
   }
@@ -39,7 +41,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   expect(text()).toContain(zh.draftKept)
   await remount()
   expect(text()).toContain(zh.draftRestored)
-  expect(all('.dt-part .dt-rows-item')).toHaveLength(2)
+  expect(all('.dt-part .dt-rows-item:not(.dt-rows-head)')).toHaveLength(2)
   // Someone else renames a rule and allows another sender meanwhile: the draft keeps its own sender and takes both of theirs.
   const { policy } = server.settings
   server.settings = { ...server.settings, policy: { ...policy, rules: [{ ...policy.rules[0]!, name: '文案' }],
@@ -171,7 +173,7 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
   const list = (label: string) => all('.dt-part > .dt-field').find(item => item.textContent?.startsWith(label))!
   const add = async (label: string) => {
     await click([...list(label).querySelectorAll('button')].find(button => button.textContent === zh.addRow)!)
-    return [...list(label).querySelectorAll('.dt-rows-item')].at(-1)!
+    return [...list(label).querySelectorAll('.dt-rows-item:not(.dt-rows-head)')].at(-1)!
   }
   expect(lists()).toEqual(['能发起工作的飞书用户', '消息可以成为候选的机器人'])
   const bot = await add('消息可以成为候选的机器人')

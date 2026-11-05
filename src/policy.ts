@@ -3,10 +3,10 @@
  * Who may originate work is configured per Source in that Source's own identities; the Policy never maps a person across Sources.
  */
 import { LIMITS } from './limits.ts'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, win32 } from 'node:path'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
-import { ENGINE_NAMES, key, isOperatorTrigger, OPERATOR_SOURCE, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
+import { ENGINE_NAMES, key, isOperatorTrigger, OPERATOR_SOURCE, UserError, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
@@ -31,14 +31,18 @@ export function directionAllowed(value: unknown): value is AdmissionDirection {
 export interface Assessment {
   decision: 'accept' | 'ignore' | 'unavailable'; rule_assessments: RuleAssessment[]; direction: unknown
   title: string; scope: string; reason: string; intent_evidence?: string | null; acknowledgement?: string | null; worktree_name?: string
+  /** The user-defined task type the assessment chose; required for acceptance when task types are configured and the Trigger's Source sets no default. */
+  taskType?: string
 }
 /**
  * Validate an assessment against enabled rules and convert it into an engine `AssessmentOutcome`.
  * Acceptance requires a settled direction, at least one matched enabled rule, and `intent_evidence`, and accepts an
  * inferred candidate only in `auto` mode (otherwise recording it as `would_accept`).
- * @throws when `rule_assessments` does not cover every enabled rule exactly once, or an accept omits `intent_evidence`.
+ * @throws when `rule_assessments` does not cover every enabled rule exactly once, an accept omits `intent_evidence`, or an
+ * accept cannot be classified while task types are configured.
  */
-export function assessmentOutcome(assessment: Assessment, settings: Pick<Settings, 'policy' | 'eval'>, strength: Strength): AssessmentOutcome {
+export function assessmentOutcome(assessment: Assessment, settings: Pick<Settings, 'policy' | 'eval' | 'executor'>, strength: Strength,
+  sourceTaskType?: string): AssessmentOutcome {
   const enabled = settings.policy.rules.filter(rule => rule.enabled)
   const judged = assessment.rule_assessments
   const ids = new Set(judged.map(item => item.rule_id))
@@ -52,13 +56,16 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
   if (!directionAllowed(assessment.direction)) return { kind: 'ignore', audit, reason: { code: 'directionUnsettled' } }
   if (!matches.length) return { kind: 'ignore', audit, reason: { code: 'noRuleMatched' } }
   if (!assessment.intent_evidence) throw new Error('Acceptance requires intent_evidence')
-  const { title, scope, worktree_name: name } = assessment
+  const { title, scope, worktree_name: name, taskType } = assessment
   if (strength === 'inferred' && settings.eval.mode !== 'auto') {
-    const proposal = { title, scope, worktree_name: name }
+    const proposal = { title, scope, worktree_name: name, taskType }
     return { kind: 'ignore', audit: { ...audit, would_accept: true, proposal }, reason: { code: 'observed', values: { text: assessment.reason } } }
   }
+  const choice = classifyTaskType(settings, { model: taskType, source: sourceTaskType })
+  if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
   return { kind: 'accept', title, scope, reason: assessment.reason, ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
-    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}) }
+    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}),
+    ...(choice.source === 'legacy' ? {} : { taskType: choice.type.id, taskTypeSource: choice.source }) }
 }
 const DEFAULT_RULES = [
   { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
@@ -71,6 +78,27 @@ export type Rule = z.infer<typeof RuleSchema>
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
 
+/** Check an absolute path on either the running platform or Windows, so a saved Windows deployment stays readable elsewhere. */
+const absolutePath = (path: string): boolean => isAbsolute(path) || win32.isAbsolute(path)
+export const TaskTypeIdSchema = z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes, starting with a letter')
+/** One user-defined task type and the worker profile its tickets run with. */
+export const TaskTypeSchema = z.object({
+  id: TaskTypeIdSchema,
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().min(1).max(1000),
+  examples: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
+  not: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
+  /** The directory every Ticket of this type works in; `fixed` uses it as is, `per-ticket` appends the Ticket's short name. */
+  directory: z.string().trim().min(1).refine(absolutePath, 'An absolute path').describe('Absolute worker directory for this task type.'),
+  /** Empty inherits `executor.model` when a Ticket is accepted. */
+  model: RoleModelSchema.nullable().default(null),
+  directoryMode: z.enum(['per-ticket', 'fixed']).default('fixed'),
+  /** Appended to the worker system prompt for this type; optional. */
+  instructions: z.string().max(4000).default(''),
+  /** Reserved for per-type concurrency; not enforced yet. */
+  maxConcurrent: z.number().int().min(1).max(LIMITS.maxWorkers.max).optional(),
+}).strict()
+export type TaskType = z.infer<typeof TaskTypeSchema>
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict()
 const Weak = z.enum(['inferred', 'ignore'])
 export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
@@ -119,7 +147,15 @@ export const ExecutorConfigSchema = z.object({
   claudeEffort: ClaudeEffortSchema.default(''),
   /** Turn on Claude Code's dynamic workflows; passed as `{"ultracode":true}` in `--settings`. */
   claudeUltracode: z.boolean().default(false),
-}).strict()
+  /** User-defined task types; each binds a Ticket's directory, model, mode and worker instructions. Empty keeps the legacy single-directory executor. */
+  taskTypes: z.array(TaskTypeSchema).max(24).default([]),
+}).strict().superRefine((value, ctx) => {
+  const ids = new Set<string>()
+  value.taskTypes.forEach((type, index) => {
+    if (ids.has(type.id)) ctx.addIssue({ code: 'custom', message: `Duplicate task type id: ${type.id}`, path: ['taskTypes', index, 'id'] })
+    ids.add(type.id)
+  })
+})
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
@@ -129,6 +165,51 @@ export const SettingsSchema = z.object({
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
 }).strict()
 export type Settings = z.infer<typeof SettingsSchema>
+/** How a Ticket's task type was chosen: explicitly by the operator or sorter, a Source's configured default, the assessor's classification, or no task types configured (legacy). */
+export type TaskTypeSource = 'explicit' | 'source' | 'model' | 'legacy'
+/** The task type chosen for new work, or why there is none: `legacy` when no types are configured, `unclassified` when the work named none or named an unknown one. */
+export type TaskTypeChoice =
+  | { type: TaskType; source: Exclude<TaskTypeSource, 'legacy'> }
+  | { source: 'legacy' }
+  | { source: 'unclassified'; unknown?: string }
+/**
+ * Choose the task type of new work from the evidence its entry point holds, strongest first: the operator's or sorter's
+ * explicit id, the Source's configured default on the Trigger, then the assessor's classification. With task types
+ * configured there is no default: work that names none, or names one that does not exist, stays unclassified and its caller
+ * refuses it (see `unclassifiedTaskTypeError`).
+ */
+export function classifyTaskType(settings: Pick<Settings, 'executor'>,
+  evidence: { explicit?: string | null; source?: string | null; model?: string | null }): TaskTypeChoice {
+  const types = settings.executor.taskTypes
+  if (!types.length) return { source: 'legacy' }
+  const exact = (id: string | null | undefined) => {
+    const wanted = id?.trim()
+    return wanted ? types.find(type => type.id === wanted) : undefined
+  }
+  const explicit = evidence.explicit?.trim()
+  if (explicit) {
+    const found = exact(explicit)
+    // An explicit id that does not exist is the operator's or sorter's mistake, not an invitation to guess another type.
+    return found ? { type: found, source: 'explicit' } : { source: 'unclassified', unknown: explicit }
+  }
+  const source = exact(evidence.source)
+  if (source) return { type: source, source: 'source' }
+  const model = evidence.model?.trim()
+  if (model) {
+    const found = exact(model)
+    // The assessor named an id: report it back when it does not exist so the next decision can correct it.
+    return found ? { type: found, source: 'model' } : { source: 'unclassified', unknown: model }
+  }
+  return { source: 'unclassified' }
+}
+/** The refusal for work that cannot be classified; `unknown` names the id that does not exist. */
+export function unclassifiedTaskTypeError(settings: Pick<Settings, 'executor'>, unknown?: string): UserError {
+  const types = settings.executor.taskTypes.map(type => type.id).join(', ')
+  return unknown ? new UserError('unknownTaskType', { type: unknown, types }) : new UserError('unclassifiedWork', { types })
+}
+/** Look up a configured task type by id; undefined for a removed or unknown type. */
+export const taskTypeOf = (settings: Pick<Settings, 'executor'>, id: string | null | undefined): TaskType | undefined =>
+  id ? settings.executor.taskTypes.find(type => type.id === id) : undefined
 export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync'

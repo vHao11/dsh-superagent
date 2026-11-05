@@ -153,7 +153,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
         paused={!!state?.paused} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
-        : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
+        : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} taskType={route.query?.taskType} state={state} reload={reload} /> : waiting
       case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
         deploymentForm={deploymentForm} /> : waiting
     }

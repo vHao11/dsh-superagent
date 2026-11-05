@@ -32,10 +32,12 @@ export function basisFacts(basis: MandateBasis, rule: Snapshot['rule']): { facts
   if (authority) facts.push({ name: 'legacyAuthority', value: authority })
   return { facts, legacy: authority !== undefined }
 }
-export function ticketList(host: ViewHost, stage: 'open' | TicketStage['stage'], offset: number, limit: number) {
+export function ticketList(host: ViewHost, stage: 'open' | TicketStage['stage'], offset: number, limit: number, taskType?: string) {
   const view = snapshot(host)
   const { store } = view
-  const shown = (ticket: Ticket) => stage === 'open' ? liveTicket(ticket) : ticketStage(ticket).stage === stage
+  // A task-type filter narrows the list to Tickets whose accepted type matches; untyped legacy Tickets never match.
+  const matches = (ticket: Ticket) => !taskType || ticket.execution?.taskType === taskType
+  const shown = (ticket: Ticket) => (stage === 'open' ? liveTicket(ticket) : ticketStage(ticket).stage === stage) && matches(ticket)
   const tickets = (stage === 'ended' ? store.tickets.list() : store.tickets.open()).filter(shown).sort(newestFirst)
   const result = page(tickets, offset, limit)
   return { ...result, items: result.items.map(ticket => ticketRow(view, ticket)) }
@@ -45,7 +47,9 @@ export function ticketRow(view: Snapshot, ticket: Ticket) {
   const line = ticketLine(view, ticket)
   const channel = ticket.channels[0]
   const reply = line.stage === 'person' && channel ? channelLink(view, channel) : undefined
-  return { ...line, ...reply ? { reply } : {} }
+  const taskTypeName = ticket.execution?.taskType
+    ? view.store.settings().executor.taskTypes.find(type => type.id === ticket.execution!.taskType)?.name : undefined
+  return { ...line, ...(taskTypeName ? { taskTypeName } : {}), ...reply ? { reply } : {} }
 }
 /** Executor slot utilization: `running` worker Sessions in an active turn (which occupy slots and are interrupted by a restart), and tickets `queued` for a slot. */
 export interface ExecutorLoad { running: number; queued: number }
@@ -71,7 +75,9 @@ export function ticketDetail(host: ViewHost, id: string) {
   }
   // Pass `human = false` for bot-originated mandates so the Source kind still labels the actor as a bot if removed from the policy list.
   const human = ticket.mandate.basis.via !== 'bot'
-  return { ...ticketLine(view, ticket), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
+  const taskTypeName = ticket.execution?.taskType
+    ? store.settings().executor.taskTypes.find(type => type.id === ticket.execution!.taskType)?.name : undefined
+  return { ...ticketLine(view, ticket), ...(taskTypeName ? { taskTypeName } : {}), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,

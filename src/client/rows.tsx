@@ -7,6 +7,18 @@ import { usePanel } from './provider.tsx'
 import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
 import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
 
+const TASK_TYPE_SOURCE_LABELS = { explicit: 'taskTypeSourceExplicit', source: 'taskTypeSourceSource',
+  model: 'taskTypeSourceModel', legacy: 'taskTypeSourceLegacy' } as const
+
+/** A Ticket's task type and, once recorded, how it was chosen, in the same quiet style as the row's other facts. */
+export function TaskTypeValue({ type, name, source, mono }: {
+  type: string; name?: string; source?: TicketRow['taskTypeSource']; mono?: boolean
+}) {
+  const { t } = usePanel()
+  return <>{mono ? <span className="dt-mono">{type}</span> : name ?? type}
+    {source && <span className="dt-hint"> · {t(TASK_TYPE_SOURCE_LABELS[source])}</span>}</>
+}
+
 export function TicketLine({ ticket, question, onChanged, context }: {
   ticket: TicketRow; question?: boolean; onChanged?: () => Promise<void>; context?: boolean
 }) {
@@ -22,6 +34,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
         id: ticket.id })}>{ticket.title}</button></div>
       <div className="dt-row-meta dt-ticket-meta">
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
+        {ticket.taskType && <LabelValue label={t('taskTypeLabel')} value={<TaskTypeValue type={ticket.taskType} name={ticket.taskTypeName} source={ticket.taskTypeSource} />} />}
         {context && <ContextTag />}
         {ticket.undelivered > 0 && <LabelValue label={t('ticketUndeliveredLabel')} value={ticket.undelivered} />}
         {note ? <span className={note.error ? 'dt-ticket-note dt-ticket-note-error' : 'dt-ticket-note'} title={note.text}>{note.text}</span>

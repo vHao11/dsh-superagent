@@ -97,10 +97,27 @@ export function policySection(settings: Settings, config: PromptConfig = default
   return { key: part, text: fill(builtIn(config, part), { version: policyVersion(settings), mode: settings.eval.mode, rules: rules.join('\n') }) }
 }
 /**
+ * The main Session's Task types section, generated from the settings so a type added in the panel reaches the sorter without
+ * touching prompts/*.md. The sorter chooses one id; the host resolves the directory, model and instructions itself.
+ */
+export function taskTypesSection(settings: Settings): { key: string; text: string } {
+  const { taskTypes } = settings.executor
+  const line = (text: string) => text.replace(/\s*\n\s*/g, ' ').trim()
+  if (!taskTypes.length) return { key: 'runtime/task-types', text: '## Task types\nNo task types are configured: omit taskType; the Executor uses its configured Ticket directory.' }
+  const lines = taskTypes.map(type => {
+    const examples = type.examples.length ? ` Examples: ${type.examples.map(line).join('; ')}` : ''
+    const not = type.not.length ? ` Not for: ${type.not.map(line).join('; ')}` : ''
+    return `- ${type.id} (${line(type.name)}): ${line(type.description)}${examples}${not}`
+  })
+  return { key: 'runtime/task-types', text: '## Task types\nWork cannot proceed unclassified: every accepted request and every accepted Eval decision must name one of these ids as taskType. A Source may configure a default type for its triggers, which applies when you omit it. If none fits, do not accept the work.\n'
+    + `${lines.join('\n')}` }
+}
+/**
  * Assemble a role's system prompt sections in order from fixed templates, team sections, the generated execution environment
  * and, last, the main Session's generated Policy section, which nothing follows, and whose change leaves the rest unchanged.
  */
-export function promptParts(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string }) {
+export function promptParts(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string },
+  taskTypes?: string) {
   // A built-in part names the key its text is overridden by, which for the handoff names the role.
   const fixed = (name: string, part = name) => ({ name, kind: 'fixed' as const, key: part, text: builtIn(config, part as PartKey) })
   const team = (name: TeamSection) => ({ name, kind: 'team' as const, heading: `## ${TEAM_HEADINGS[name]}`,
@@ -113,11 +130,13 @@ export function promptParts(config: PromptConfig, role: Role, environment?: stri
     ...role === 'orchestrator' ? [fixed('runtime/admission')] : [],
     fixed('runtime/handoff', `runtime/handoff/${role}`),
     ...environment ? [{ name: 'runtime/environment', kind: 'generated' as const, key: 'runtime/environment', text: environment }] : [],
+    ...role === 'orchestrator' && taskTypes ? [{ name: 'runtime/task-types', kind: 'generated' as const, key: 'runtime/task-types', text: taskTypes }] : [],
     ...role === 'orchestrator' && policy ? [{ name: 'runtime/policy', kind: 'generated' as const, ...policy }] : [],
   ].filter(part => part.text)
 }
-export function composePrompt(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string }): string {
-  return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
+export function composePrompt(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string },
+  taskTypes?: string): string {
+  return promptParts(config, role, environment, policy, taskTypes).map(part => part.text).join('\n\n')
 }
 export function composeSkill(config: PromptConfig, name: string): string {
   return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
@@ -140,9 +159,11 @@ export class Prompts {
     private readonly feishu: () => boolean) {
     this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
   }
-  /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
+  /** A role's prompt; the main Session's Task types and Policy sections follow the settings as they are now, at each model request. */
   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
-    return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
+    const settings = this.store.settings()
+    return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(settings, config) : undefined,
+      role === 'orchestrator' ? taskTypesSection(settings).text : undefined)
   }
   /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
   skills(config: PromptConfig): [string, string][] {
@@ -196,9 +217,10 @@ export class Prompts {
   }
   preview(value: unknown) {
     const config = this.validate(value)
-    const environment = environmentSection(config, this.environment()), policy = policySection(this.store.settings(), config)
-    return { orchestrator: composePrompt(config, 'orchestrator', environment, policy), worker: composePrompt(config, 'worker', environment),
-      parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy), worker: promptParts(config, 'worker', environment) },
+    const settings = this.store.settings()
+    const environment = environmentSection(config, this.environment()), policy = policySection(settings, config), taskTypes = taskTypesSection(settings).text
+    return { orchestrator: composePrompt(config, 'orchestrator', environment, policy, taskTypes), worker: composePrompt(config, 'worker', environment),
+      parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy, taskTypes), worker: promptParts(config, 'worker', environment) },
       skills: Object.fromEntries(this.skills(config)), scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally inherit the host prompt and repository AGENTS.md. Prompt text changes what the agents are told, not what dsh-superagent allows: tool permissions, the gate and account wrappers stay.' }
   }
   save(value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion {

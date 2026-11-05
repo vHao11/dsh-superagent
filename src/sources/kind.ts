@@ -19,7 +19,7 @@ export type FieldSpec =
   | FieldBase & { type: 'number'; min: number; max: number }
   | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized }
   | FieldBase & { type: 'fact'; settings?: 'deployment' }
-  | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
+  | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; width?: number; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized; multiline?: boolean } | { key: string; label: Localized; width?: number; type: 'select'; options: { value: string; label: Localized }[] })[] }
 
 export interface VariableSpec { key: string; description: Localized }
 export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger }
@@ -96,6 +96,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   health: string[]
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
   scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
+  /** The task type every Trigger of this kind defaults to, according to its configuration; undefined when the kind sets none. */
+  taskType?(trigger: Trigger, config: C): string | undefined
   /** Outbound reply adapter; kinds without `channel` produce no replies or channel checks. */
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */

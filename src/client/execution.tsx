@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -11,12 +11,13 @@ import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlock
 import { localized } from './text.ts'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
 
-export function ExecutionStatus({ filter: current, state, reload }: {
-  filter: TicketFilter; state: StateView; reload: () => Promise<void>
+export function ExecutionStatus({ filter: current, taskType, state, reload }: {
+  filter: TicketFilter; taskType?: string; state: StateView; reload: () => Promise<void>
 }) {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(20)
-  const { data, error, reload: reloadTickets } = usePoll(() => call('GET tickets', { query: { state: current, limit } }), [current, limit])
+  const { data, error, reload: reloadTickets } = usePoll(() => call('GET tickets', { query: { state: current, limit,
+    ...(taskType ? { taskType } : {}) } }), [current, taskType, limit])
   const { paused, load: { maxWorkers } } = state
   // Pausing uses its own block revision so toggling pause does not invalidate an open Execution settings draft.
   const pause = async () => { await call('POST executor/pause', { body: { paused: !paused } }); await reload() }
@@ -24,6 +25,9 @@ export function ExecutionStatus({ filter: current, state, reload }: {
     label: t('processingPaused') }
     : { tone: 'ongoing', label: t('executorRunning') }
   const action = paused ? 'resumeProcessing' : 'pauseProcessing'
+  // The task-type filter is applied by the host; the route keeps an unfiltered list when no type is chosen.
+  const show = (filter: TicketFilter, type = taskType) => { setLimit(20)
+    navigate({ page: 'execution', query: { ...(filter === 'open' ? {} : { filter }), ...(type ? { taskType: type } : {}) } }, true) }
   return <>
     <StatusHead hint={t('executionStatusIntro')} settings="execution" />
     <div className="dt-row-meta dt-status-line">
@@ -38,8 +42,15 @@ export function ExecutionStatus({ filter: current, state, reload }: {
     </div>
     <div className="dt-filters">
       {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}
-        onClick={() => { setLimit(20); navigate({ page: 'execution', query: value === 'open' ? {} : { filter: value } },
-          true) }}>{t(`ticketFilter.${value}`)}</Pill>)}
+        onClick={() => show(value)}>{t(`ticketFilter.${value}`)}</Pill>)}
+      {state.taskTypes.length > 0 && <label className="dt-row-meta">
+        <span className="dt-hint">{t('ticketTypeFilter')}</span>
+        <select className="dt-select" aria-label={t('ticketTypeFilter')} value={taskType ?? ''}
+          onChange={event => show(current, event.target.value || undefined)}>
+          <option value="">{t('ticketTypeAll')}</option>
+          {state.taskTypes.map(type => <option key={type.id} value={type.id}>{type.name}</option>)}
+        </select>
+      </label>}
     </div>
     {current === 'idle' && <Hint>{t('idleHint')}</Hint>}
     <LoadState error={error} loading={!data} />
@@ -51,6 +62,113 @@ export function ExecutionStatus({ filter: current, state, reload }: {
 }
 
 const firstSentence = (text: string): string => /^[^。；;.]*(?:[。；;]|\.(?=\s|$))?/.exec(text)?.[0] ?? text
+// The panel's pre-save check for a Ticket directory: a POSIX root, a Windows drive (`D:\…` or `D:/…`) or a UNC share.
+// The host validates the path again, so this only rejects obviously wrong shapes before a save is sent.
+const ABSOLUTE_DIRECTORY = String.raw`(?:[A-Za-z]:(?:\\|/)|\\\\|/).*`
+type TaskTypeDraft = SettingsView['blocks']['executor']['value']['taskTypes'][number]
+const linesOf = (text: string): string[] => text.split('\n').map(line => line.trim()).filter(Boolean)
+/** A new type takes the first free generated id, so adding one after a removal never collides with an existing type. */
+function blankTaskType(taskTypes: TaskTypeDraft[]): TaskTypeDraft {
+  let serial = taskTypes.length + 1
+  while (taskTypes.some(type => type.id === `custom-${serial}`)) serial++
+  return { id: `custom-${serial}`, name: '', description: '', examples: [], not: [], directory: '', model: null,
+    directoryMode: 'fixed', instructions: '' }
+}
+/**
+ * Editor for the user-defined task types. The sorter only picks an id; every directory, model and instruction here is
+ * resolved by the host, so the panel is the one place these execution profiles are defined. There is no default type:
+ * once a type exists, new work must be classified. One dropdown picks the type to edit, so a deployment with many types
+ * keeps the others folded instead of one long form.
+ */
+function TaskTypesEditor({ taskTypes, onChange }: {
+  taskTypes: TaskTypeDraft[]; onChange: (next: TaskTypeDraft[]) => void
+}) {
+  const { t } = usePanel()
+  const [selected, setSelected] = useState(0)
+  const index = taskTypes.length ? Math.min(selected, taskTypes.length - 1) : -1
+  const type = index >= 0 ? taskTypes[index]! : undefined
+  const patch = (index: number, next: Partial<TaskTypeDraft>) => {
+    onChange(taskTypes.map((type, at) => at === index ? { ...type, ...next } : type))
+  }
+  const remove = (index: number) => {
+    const next = taskTypes.filter((_type, at) => at !== index)
+    onChange(next)
+    setSelected(index < selected ? Math.max(0, selected - 1) : Math.min(selected, next.length - 1))
+  }
+  const add = () => {
+    onChange([...taskTypes, blankTaskType(taskTypes)])
+    setSelected(taskTypes.length)
+  }
+  return <div className="dt-form dt-block">
+    <h2 className="dt-block-title">{t('taskTypes')}<InfoTip text={t('taskTypesHint')} /></h2>
+    <Hint>{t('taskTypesRule')}</Hint>
+    {type ? <>
+      <div className="dt-field">
+        <div className="dt-subhead">
+          <span className="dt-field-head">{t('taskTypeSelect')}</span>
+          <span className="dt-subhead-actions">
+            <Button variant="ghost" size="sm" icon={<Icon name="plus" />} onClick={add}>{t('taskTypeAdd')}</Button>
+            <Button variant="ghost" size="sm" icon={<Icon name="trash" />} onClick={() => remove(index)}>{t('taskTypeRemove')}</Button>
+          </span>
+        </div>
+        <select className="dt-select" aria-label={t('taskTypeSelect')} value={String(index)}
+          onChange={event => setSelected(Number(event.target.value))}>
+          {taskTypes.map((item, at) => <option key={at} value={at}>{item.name || item.id || t('empty')}</option>)}
+        </select>
+      </div>
+      <div className="dt-form">
+        <div className="dt-grid3">
+          <Field label={t('taskTypeId')}>
+            <Input className="dt-mono" value={type.id} placeholder={t('taskTypeIdPlaceholder')} spellCheck={false}
+              onChange={event => patch(index, { id: event.target.value })} />
+          </Field>
+          <Field label={t('taskTypeName')}>
+            <Input value={type.name} placeholder={t('taskTypeNamePlaceholder')} onChange={event => patch(index, { name: event.target.value })} />
+          </Field>
+        </div>
+        <Field label={t('taskTypeDescription')}>
+          <textarea className="dt-textarea" rows={2} maxLength={1000} value={type.description}
+            placeholder={t('taskTypeDescriptionPlaceholder')} onChange={event => patch(index, { description: event.target.value })} />
+        </Field>
+        <div className="dt-grid3">
+          <Field label={t('taskTypeExamples')}>
+            <textarea className="dt-textarea" rows={2} value={type.examples.join('\n')}
+              onChange={event => patch(index, { examples: linesOf(event.target.value) })} />
+          </Field>
+          <Field label={t('taskTypeNot')}>
+            <textarea className="dt-textarea" rows={2} value={type.not.join('\n')}
+              onChange={event => patch(index, { not: linesOf(event.target.value) })} />
+          </Field>
+        </div>
+        <div className="dt-grid3">
+          <Field label={t('taskTypeDirectory')}>
+            <Input className="dt-mono" value={type.directory} spellCheck={false}
+              onChange={event => patch(index, { directory: event.target.value })} />
+          </Field>
+          <Field label={t('taskTypeDirectoryMode')}>
+            <select className="dt-select" value={type.directoryMode}
+              onChange={event => patch(index, { directoryMode: event.target.value as TaskTypeDraft['directoryMode'] })}>
+              {(['fixed', 'per-ticket'] as const).map(mode => <option key={mode} value={mode}>{t(`directoryMode.${mode}`)}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div className="dt-field">
+          <span className="dt-field-head"><label>{t('taskTypeModel')}</label><InfoTip text={t('taskTypeModelHint')} /></span>
+          <ModelField value={type.model} inherit={t('taskTypeModelInherit')} onChange={model => patch(index, { model })} />
+        </div>
+        <Field label={t('taskTypeInstructions')}>
+          <textarea className="dt-textarea dt-mono" rows={3} maxLength={4000} value={type.instructions}
+            onChange={event => patch(index, { instructions: event.target.value })} />
+        </Field>
+      </div>
+    </> : <>
+      <Hint>{t('taskTypeEmpty')}</Hint>
+      <div className="dt-actions">
+        <Button variant="ghost" size="sm" icon={<Icon name="plus" />} onClick={add}>{t('taskTypeAdd')}</Button>
+      </div>
+    </>}
+  </div>
+}
 function EnvironmentVariables({ groups, sources,
   onPick }: { groups: SettingsView['environment']['variables']; sources: SourceView[]; onPick: (key: string) => void }) {
   const { t } = usePanel()
@@ -94,7 +212,7 @@ export function ExecutionSettings() {
       <Fields disabled={draft.busy}>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
-          <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
+          <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField value={value.model}
             onChange={model => edit({ model })} /></Section>
           <Section title={t('executorEngine')} hint={t('executorEngineHint')}>
             <Field label={t('executorEngine')}>
@@ -153,7 +271,7 @@ export function ExecutionSettings() {
           </Field>
           <Field label={t('executionDirectory')} hint={value.directoryMode === 'fixed' ? t('executionDirectoryFixedHint')
             : t('executionDirectoryHint')} note={value.directory ? undefined : t('executionDirectoryDefault', { root: environment.root })}>
-            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"
+            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern={ABSOLUTE_DIRECTORY}
               onChange={event => edit({ directory: event.target.value })} />
           </Field>
           <Field label={t('prepareCommand')} hint={t('prepareCommandHint')} note={value.directoryMode === 'fixed'
@@ -168,6 +286,7 @@ export function ExecutionSettings() {
               onChange={event => edit({ blockedCommands: event.target.value })} />
           </Field>
         </div>
+        <TaskTypesEditor taskTypes={value.taskTypes} onChange={taskTypes => edit({ taskTypes })} />
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />
     </form>

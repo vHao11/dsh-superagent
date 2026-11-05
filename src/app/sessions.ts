@@ -156,8 +156,10 @@ export class Sessions {
     const settings = this.host.store.settings()
     const ticket = role === 'worker' ? this.ticketOfId(id) : undefined
     const engine: EngineName = role === 'worker' ? ticket?.execution?.engine ?? settings.executor.engine : 'dsh'
+    // The ticket's execution snapshots the type's model (or the executor's when the type inherits), so a later settings change does not move it.
+    const model = role === 'orchestrator' ? settings.eval.model : ticket?.execution?.model ?? settings.executor.model
     // A native Claude Code worker runs its own loop; seeding a DSH model would only add an unused selection.
-    if (engine !== 'claude-code') await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    if (engine !== 'claude-code') await initializeRoleModel(ctx, result.agent, model)
     await this.decorate(result.agent)
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
@@ -281,7 +283,12 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const taskType = current?.execution?.taskType
+      // The ticket snapshots its type's instructions, so a later settings edit does not rewrite an in-flight worker.
+      const profile = taskType ? host.store.settings().executor.taskTypes.find(type => type.id === taskType) : undefined
+      const typeInstructions = taskType ? current?.execution?.instructions ?? profile?.instructions ?? '' : ''
+      const taskSection = taskType ? `\n\n## Task type\n${taskType}${profile ? ` (${profile.name})` : ''}${typeInstructions ? `\n${typeInstructions}` : ''}` : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}${taskSection}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {

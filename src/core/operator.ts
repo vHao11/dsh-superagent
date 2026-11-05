@@ -15,6 +15,8 @@ export interface OperatorTask {
   request: string
   /** The worker engine to use; omitted uses the executor setting. */
   engine?: EngineName
+  /** The user-defined task type; omitted uses the configured default. */
+  taskType?: string
   /** The short English worktree name the accept carries. */
   name?: string
 }

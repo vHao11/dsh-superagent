@@ -43,7 +43,14 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined
     },
-    receive: trigger => deps.receive(trigger),
+    // Source defaults are snapshotted onto the Trigger when it is received.
+    receive: trigger => {
+      if (trigger.taskType !== undefined) return deps.receive(trigger)
+      const descriptor = deps.sources.kind(kind.kind)
+      const instance = deps.sources.instance(kind.kind)
+      const taskType = instance?.enabled ? descriptor?.taskType?.(trigger, instance.config) : undefined
+      return deps.receive(taskType ? { ...trigger, taskType } : trigger)
+    },
     atomic: work => store.atomic(work),
     state: {
       get: name => store.get(name),

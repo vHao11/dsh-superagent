@@ -1,5 +1,5 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
-import type { Assignment, ChannelRef, Decision, DecisionKind, EngineName, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
+import type { Assignment, ChannelRef, Decision, DecisionKind, EngineName, Mandate, MandateBasis, Strength, TaskTypeSource, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
   from './model.ts'
 import type { Reason } from './reasons.ts'
 
@@ -40,9 +40,9 @@ export interface Candidate {
 export type AssessmentOutcome =
   | { kind: 'ignore'; reason: string | Reason; audit?: Record<string, unknown> }
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
-  /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, `note` a routing note for its worker, and `engine` an optional override of the configured executor engine. */
+  /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, `note` a routing note for its worker, `taskType` its user-defined type, and `engine` an optional override of the configured executor engine. */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; note?: string; engine?: EngineName }
+    name?: string; note?: string; engine?: EngineName; taskType?: string; taskTypeSource?: Exclude<TaskTypeSource, 'legacy'> }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */

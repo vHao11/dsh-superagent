@@ -24,6 +24,16 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 Each Ticket gets an Executor Session named `worker-<ticket id>`. Its directory depends on the execution directory mode. `per-ticket`, the default, creates a directory named after the Ticket's short name under the configured execution root, which defaults to `<stateDir>/work`; `fixed` runs every Ticket in the root itself. The fixed mode suits a deployment that works directly in one checkout, and concurrent Tickets then share that workspace, so their branches and files can collide.
 
+### Task types
+
+With no types configured, the executor root and mode above apply unchanged, and `execution.taskTypeSource` is `legacy`. Once Execution settings define task types, the Ticket's type decides instead: its `directory` and `directoryMode` replace the executor root and mode, its `model` (or the executor model when empty) becomes the worker's model, and its `instructions` join the worker system prompt.
+
+There is no default task type, and work cannot proceed unclassified: every accepted Ticket and every accepted Eval decision must name one of the configured type ids. Work that cannot be classified is refused with `unclassifiedWork`, and an id that is not among the configured types is refused with `unknownTaskType`.
+
+The type comes from the first available evidence, in order: an explicit id from the sorter or operator, the Source's default for the Trigger, then the assessor's chosen type. An explicit id is always final: an unknown explicit id is refused even when a Source default exists, and when no evidence names a type the work is refused. The sorter chooses only a type id; the host resolves and snapshots the profile, so a later settings edit does not move an in-flight Ticket.
+
+A Source can set its own default. A Feishu chat row's `taskType` covers messages in that chat, and a GitHub Source's `taskType` covers every Trigger from its repository; both apply only when the sorter omits the type. The panel shows how a Ticket's type was chosen next to it, from `execution.taskTypeSource`: **Sorter specified**, **Source default**, **Assessor chosen**, or **Legacy**.
+
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.

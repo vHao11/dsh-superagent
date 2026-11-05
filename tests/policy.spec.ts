@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed,
+  unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -255,7 +256,8 @@ describe('settings migration', () => {
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
       executor: { engine: 'dsh', model: null, maxWorkers: 5, directory: '', directoryMode: 'per-ticket', prepare: '', blockedCommands: [],
-        claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false },
+        claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
+        taskTypes: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
@@ -483,5 +485,55 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('task types', () => {
+  const type = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id.toUpperCase(), description: `${id} work`,
+    directory: `D:\\aiworkspace\\${id}`, ...extra })
+  const withTypes = (types: ReturnType<typeof type>[]) => SettingsSchema.parse({ executor: { taskTypes: types } })
+  it('ships no task types by default and classifies explicit, source, model and legacy evidence', () => {
+    expect(SettingsSchema.parse({}).executor.taskTypes).toEqual([])
+    const settings = withTypes([type('env-fix'), type('jzjy')])
+    expect(classifyTaskType(settings, { explicit: 'jzjy' })).toMatchObject({ source: 'explicit', type: { id: 'jzjy' } })
+    expect(classifyTaskType(settings, { explicit: 'nope', source: 'env-fix' })).toEqual({ source: 'unclassified', unknown: 'nope' })
+    expect(classifyTaskType(settings, { source: 'env-fix' })).toMatchObject({ source: 'source', type: { id: 'env-fix' } })
+    expect(classifyTaskType(settings, { source: 'nope', model: 'jzjy' })).toMatchObject({ source: 'model', type: { id: 'jzjy' } })
+    expect(classifyTaskType(settings, {})).toEqual({ source: 'unclassified' })
+    // An explicit id wins over a Source default, which wins over the assessor's choice.
+    expect(classifyTaskType(settings, { explicit: 'jzjy', source: 'env-fix', model: 'env-fix' })).toMatchObject({ source: 'explicit', type: { id: 'jzjy' } })
+    expect(classifyTaskType(settings, { source: 'env-fix', model: 'jzjy' })).toMatchObject({ source: 'source', type: { id: 'env-fix' } })
+    // With no types configured, the legacy executor directory applies and any evidence is irrelevant.
+    expect(classifyTaskType(SettingsSchema.parse({}), { explicit: 'jzjy' })).toEqual({ source: 'legacy' })
+  })
+  it('refuses duplicate ids and reports unclassified work', () => {
+    const one = type('env-fix')
+    expect(() => withTypes([one, { ...one }])).toThrow()
+    const settings = withTypes([type('env-fix'), type('jzjy')])
+    expect(unclassifiedTaskTypeError(settings, 'nope').message).toMatch(/Unknown task type nope/)
+    expect(unclassifiedTaskTypeError(settings).message).toMatch(/Work cannot proceed unclassified/)
+  })
+  it('drops the removed default task type from migrated settings', () => {
+    const migrated = SettingsSchema.parse(migrateSettings({ executor: { maxWorkers: 2, defaultTaskType: 'env-fix' } }))
+    expect(migrated.executor.taskTypes).toEqual([])
+    expect('defaultTaskType' in migrated.executor).toBe(false)
+  })
+  it('carries the resolved type and its evidence into an accepted outcome, and refuses unclassified acceptance', () => {
+    const rules = [{ id: 'copy', name: 'Copy', enabled: true, instruction: 'Fix copy' }]
+    const settings = SettingsSchema.parse({ executor: { taskTypes: [type('env-fix'), type('jzjy')] }, policy: { rules } })
+    const assessment = { decision: 'accept' as const, rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'x' }],
+      direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'x' },
+      title: 'Fix', scope: 'Fix', reason: 'r', intent_evidence: 'evidence', worktree_name: 'fix-copy' }
+    expect(assessmentOutcome({ ...assessment, taskType: 'jzjy' }, settings, 'explicit'))
+      .toMatchObject({ kind: 'accept', taskType: 'jzjy', taskTypeSource: 'model' })
+    // The Source default classifies work the assessor leaves untyped.
+    expect(assessmentOutcome(assessment, settings, 'explicit', 'env-fix'))
+      .toMatchObject({ kind: 'accept', taskType: 'env-fix', taskTypeSource: 'source' })
+    expect(() => assessmentOutcome(assessment, settings, 'explicit')).toThrow(/Work cannot proceed unclassified/)
+    expect(() => assessmentOutcome({ ...assessment, taskType: 'nope' }, settings, 'explicit')).toThrow(/Unknown task type nope/)
+    // Without configured types the legacy directory applies and no type rides along.
+    const legacy = assessmentOutcome(assessment, SettingsSchema.parse({ policy: { rules } }), 'explicit')
+    expect(legacy).toMatchObject({ kind: 'accept' })
+    expect(legacy).not.toHaveProperty('taskType')
   })
 })

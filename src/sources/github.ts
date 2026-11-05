@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { key, type Thread } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { GithubAccountsSchema } from '../deployment.ts'
+import { TaskTypeIdSchema } from '../policy.ts'
 import { CliError, validItems, type Tally } from '../infra/commands.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
@@ -24,6 +25,7 @@ const NotificationSchema = z.looseObject({
 
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
+  taskType: TaskTypeIdSchema.optional(),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
   observeCi: z.boolean().default(false) }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
@@ -45,6 +47,8 @@ export const githubKind: SourceKind<GithubConfig> = {
       hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
+    { key: 'taskType', type: 'text', label: { zh: '默认任务类型', en: 'Default task type' }, pattern: '^[a-z][a-z0-9-]{0,63}$',
+      hint: { zh: '这个来源收到的每条触发默认归到这个类型；不设时工作必须显式分类，未分类不能推进。', en: 'Every trigger this Source receives defaults to this type; when unset, work must be classified explicitly and unclassified work cannot proceed.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
@@ -60,6 +64,7 @@ export const githubKind: SourceKind<GithubConfig> = {
     const row = scopeOf(meta)
     return { listened: true, observed: row !== undefined && config[OBSERVED[row]], ...row ? { row } : {} }
   },
+  taskType: (_trigger, config) => config.taskType,
   health: ['github'],
   channel: { send: sendGithub, link: githubLink },
   threadContext: githubThreadContext,

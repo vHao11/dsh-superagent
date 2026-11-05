@@ -5,7 +5,7 @@ import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { settingsRoute } from './route.ts'
-import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
+import { Earlier, TaskTypeValue, ThreadLine, automatedRuns } from './rows.tsx'
 import { actorName, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { ActionLink, ConfirmButton, ExternalLink, Hint, KeyValues, LabelValue, LoadState, MarkdownLite, PageHead, Section, SessionButton,
   StageMark, When } from './widgets.tsx'
@@ -136,6 +136,7 @@ export function TicketPage({ id }: { id: string }) {
     {error && <LoadState error={error} loading={false} />}
     <div className="dt-row-meta dt-status-line">
       <StageMark state={status.dot} icon={status.icon} label={status.label} />
+      {data.taskType && <LabelValue label={t('taskTypeLabel')} value={<TaskTypeValue type={data.taskType} name={data.taskTypeName} source={data.taskTypeSource} />} />}
       <LabelValue label={t('ticketMandateLabel')} value={valueLabel(t, 'strength', data.mandate.strength)} />
       <LabelValue label={t('ticketActorLabel')} value={`${valueLabel(t, 'source', data.mandate.actor.source)} · ${actor}`} />
       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
@@ -183,8 +184,9 @@ export function TicketPage({ id }: { id: string }) {
         <InputList inputs={data.inputs.filter(input => input.delivered)} />
       </Details>}
       <Details icon="hash" title={t('identifiers')}>
-        <KeyValues rows={[[t('ticketId'), <span className="dt-mono">{data.id}</span>], [t('executionDirectory'), <span
-          className="dt-mono">{data.directory ?? t('empty')}</span>],
+        <KeyValues rows={[[t('ticketId'), <span className="dt-mono">{data.id}</span>],
+          ...data.taskType ? [[t('taskTypeLabel'), <TaskTypeValue type={data.taskType} source={data.taskTypeSource} mono />] as [string, ReactNode]] : [],
+          [t('executionDirectory'), <span className="dt-mono">{data.directory ?? t('empty')}</span>],
           ...legacy && data.mandate.scope ? [[t('legacyAssignment'), <span
             className="dt-mono dt-clamp">{data.mandate.scope}</span>] as [string, ReactNode]] : []]} />
       </Details>

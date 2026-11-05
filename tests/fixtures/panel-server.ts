@@ -100,6 +100,10 @@ export interface PanelServer {
   searching?: (query: string) => Promise<void>
   setup: SetupView
   health: Record<string, Health>
+  /** The DSH model catalog the model pickers read; tests may replace it with another set of Providers. */
+  models: ApiResponse<'GET models'>
+  /** When set, `GET models` answers 500 with this error, as a host whose catalog cannot be read does. */
+  modelsFailure?: string
   /** When true, all API requests return an empty 404 to simulate the host plugin being stopped. */
   down: boolean
   /** Count of responses not yet consumed by the client. */
@@ -159,6 +163,7 @@ function sourceStatuses(): SourceStatusRow[] {
 }
 const stateView = (): StateView => ({
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
+  taskTypes: server.settings.executor.taskTypes.map(({ id, name }) => ({ id, name })),
   masterId: 'master', paused: server.settings.paused,
   // The panel does not read health; the service script does.
   health: {},
@@ -248,6 +253,14 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    models: { default: { provider: 'host', model: 'default' }, routableProviders: ['deepseek-account', 'opencode'], failures: [],
+      groups: [
+        { id: 'deepseek-account', name: 'DeepSeek Account', models: [
+          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', reasoning: { efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' },
+            { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }] } },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', reasoning: { efforts: [{ id: 'high', name: 'High' }, { id: 'max', name: 'Max' }] } }] },
+        { id: 'opencode', name: 'opencode', models: [
+          { id: 'flash-light', name: 'DeepSeek V4.1 Flash', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }] }] },
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -300,6 +313,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'GET sources': { answer: sourceStatuses },
   'GET settings': { answer: settingsView },
+  'GET settings/:block': { answer: ({ params }) => {
+    const block = params.block
+    if (block === 'pause') return { block, revision: server.revisions.pause ?? 0, value: { paused: server.settings.paused } }
+    if (block !== 'policy' && block !== 'eval' && block !== 'executor') return refuse(404, 'Unknown block')
+    return { block, revision: server.revisions[block] ?? 0, value: server.settings[block] }
+  } },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
     if (server.joinError) return refuse(500, server.joinError)
@@ -324,8 +343,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     ({ items: query.kind === 'ignore' ? [] : [acceptDecision()], next_offset: null }) },
   'POST decisions/:id/dismiss': { answer: ({ params }) => params.id === 'u1' ? { dismissed: true } : refuse(404,
     'Unavailable Eval not found') },
-  'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
-    : 'open']) },
+  'GET tickets': { query: ['state', 'offset', 'limit', 'taskType'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
+    : 'open'].filter(ticket => !query.taskType || ticket.taskType === query.taskType)) },
   'GET tickets/:id': { answer: ({ params }) => server.ticketDetails[params.id] ?? refuse(404, 'Ticket not found') },
   'POST tickets/:id/retry': { answer: ({ params }) => {
     const ticket = ticketOf(params.id)
@@ -369,9 +388,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET policy/history': { answer: () => server.history },
   'POST policy-sync/:id': { answer: ({ params }) => ({ policy: server.settings.policy.sources[params.id] }) },
   'POST setup/check': { answer: () => ({ restarting: true }) },
-  'GET models': { answer: () => ({ default: { provider: 'host', model: 'default' }, routableProviders: [], failures: [],
-    groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
-      reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
+  'GET models': { answer: () => server.modelsFailure ? refuse(500, server.modelsFailure) : server.models },
   'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
   'PUT prompts': { body: true, answer: ({ body }) => {
     const { revision } = server.prompts

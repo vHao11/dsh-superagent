@@ -28,7 +28,7 @@ flowchart TB
 
 ### Runtime
 
-`Runtime` is the composition root; it contains no domain rules. Its constructor locks the state directory, opens the Store and builds each component. If construction fails, it closes the Store and releases the lock.
+`Runtime` is the composition root; it contains no domain rules. Its constructor locks the state directory, opens the Store and builds each component. If construction fails, it closes the Store and releases the lock. The plugin entry waits for a stale lock to age out before constructing it, so a host that restarts within the lock's stale window (a killed process leaves its lock behind) still activates instead of failing.
 
 Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
 
@@ -290,7 +290,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Path | Responsibility |
 | --- | --- |
-| `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
+| `src/index.ts` | The main plugin entry: reads the machine settings, waits for the state-directory lock, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
@@ -407,7 +407,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
-| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
+| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations, and assessment outcomes with the task type each resolves |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
@@ -429,6 +429,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
+| `tests/runtime-lock.spec.ts` | Waiting out a lock a killed host left behind, and giving up while it is still fresh |
+| `tests/task-types.spec.ts` | Required task classification: explicit ids, unknown ids refused, Source and assessor evidence, Ticket directory/model/instruction snapshots, the legacy single directory, the operator's required type, and the settings API |
+| `tests/task-types-source.spec.ts` | A Source's default task type: Feishu chat rows and the GitHub repository's `taskType`, invalid ids, and stamping the default onto a received Trigger |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
@@ -445,6 +448,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
+| `tests/panel-directory-format.spec.tsx` | The Execution settings accept Windows absolute Ticket directories where the form previously demanded a leading slash |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |

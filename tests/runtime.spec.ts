@@ -99,7 +99,8 @@ function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
   const { feishu: _feishu, ...others } = settings.sources
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
+  store.saveSettings(SettingsSchema.parse({ ...settings, executor: { ...settings.executor, taskTypes: [] },
+    sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
@@ -1020,8 +1021,9 @@ it('tells both roles the execution environment through a generated prompt sectio
   expect(section.text).not.toContain('MERGE_ACCOUNT')
   // Outside a ticket there is no ticket directory.
   expect(section.text).not.toContain('DSH_SUPERAGENT_DIR')
-  // The main Session's Policy section follows it.
-  expect(preview.orchestrator).toContain(`${section.text}\n\n## Policy`)
+  // The main Session's Task types and Policy sections follow it.
+  expect(preview.orchestrator).toContain(`${section.text}\n\n## Task types`)
+  expect(preview.parts.orchestrator.at(-1)!.name).toBe('runtime/policy')
   const { ticket, sessionId } = await acceptedTicket()
   expect(sections.get(sessionId)!.text({})).toContain(`- DSH_SUPERAGENT_DIR = ${JSON.stringify(ticket.execution!.directory)}`)
   expect(sections.get(runtime.masterId)!.text({})).not.toContain('DSH_SUPERAGENT_DIR')

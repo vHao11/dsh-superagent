@@ -9,7 +9,7 @@ vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
   configured() { return true }
   async stop() {}
-} }))
+}, waitForStateLock: async () => {} }))
 /** Simulate the Cordis loader updating a volatile configuration reference in place. */
 const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
 

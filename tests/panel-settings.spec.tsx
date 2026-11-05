@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { Fields } from '../src/client/settings-kit.tsx'
 import { expect, it, onTestFinished } from 'vitest'
 import { zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -23,16 +23,62 @@ it('keeps a person\'s own value where another save changed the same setting, and
   expect(server.settings.executor.maxWorkers).toBe(6)
 })
 
+it('lists every Provider and Model of the catalog in the pickers, whatever the saved route, with one label per option', async () => {
+  server.settings = { ...server.settings, eval: { ...server.settings.eval,
+    model: { provider: 'deepseek-account', model: 'deepseek-v4-pro', reasoningEffort: 'max' } } }
+  at({ page: 'settings', query: { group: 'eval' } })
+  await mount()
+  const [provider, model, effort] = all('.dt-model select') as HTMLSelectElement[]
+  // A saved Provider never filters the list, and every option shows one label: its own name, not its id too.
+  expect([...provider!.querySelectorAll('option')].map(option => [option.value, option.textContent])).toEqual([
+    ['', zh.modelInherit], ['deepseek-account', 'DeepSeek Account'], ['opencode', 'opencode']])
+  expect([...model!.querySelectorAll('option')].map(option => [option.value, option.textContent])).toEqual([
+    ['deepseek-flash', 'DeepSeek-V4.1-Flash'], ['deepseek-v4-pro', 'DeepSeek-V4-Pro']])
+  expect([...effort!.querySelectorAll('option')].map(option => [option.value, option.textContent])).toEqual([
+    ['', zh.modelEffortDefault], ['high', 'High'], ['max', 'Max']])
+  // Another Provider's model is not kept, and an effort it does not offer returns to the model default.
+  await type(provider!, 'opencode')
+  expect(model!.value).toBe('flash-light')
+  expect([...model!.querySelectorAll('option')].map(option => option.value)).toEqual(['flash-light'])
+  expect(effort!.value).toBe('')
+  expect([...effort!.querySelectorAll('option')].map(option => option.value)).toEqual(['', 'low', 'high'])
+})
+
+it('keeps a saved model route the catalog no longer lists instead of clearing it silently', async () => {
+  server.settings = { ...server.settings, eval: { ...server.settings.eval, model: { provider: 'retired', model: 'retired-model' } } }
+  at({ page: 'settings', query: { group: 'eval' } })
+  await mount()
+  const [provider, model, effort] = all('.dt-model select') as HTMLSelectElement[]
+  expect(provider!.value).toBe('retired')
+  expect([...provider!.querySelectorAll('option')].map(option => option.value)).toEqual(['', 'deepseek-account', 'opencode', 'retired'])
+  expect(model!.value).toBe('retired-model')
+  expect([...model!.querySelectorAll('option')].map(option => option.value)).toEqual(['retired-model'])
+  expect(effort!.disabled).toBe(true)
+})
+
+it('falls back to typing the Provider and Model when the DSH catalog cannot be read', async () => {
+  server.modelsFailure = 'catalog unavailable'
+  at({ page: 'settings', query: { group: 'eval' } })
+  await mount()
+  expect(text()).toContain(zh.modelCatalogError.replace('{error}', 'catalog unavailable'))
+  expect(all('.dt-model select')).toHaveLength(0)
+  const [provider, model] = all('.dt-model input')
+  await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
+  await click(zh.save)
+  expect(server.settings.eval.model).toEqual({ provider: 'worker-provider', model: 'worker-model' })
+})
+
 it('saves the Eval block on the Policy settings and the Executor with its execution environment on the Execution settings, each against its own revision', async () => {
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   await click(zh['mode.auto'])
   await type(field<HTMLInputElement>(zh.evalTimeout), '180')
-  const [provider, model] = all('.dt-model input')
-  await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
+  const [provider, model] = all('.dt-model select')
+  await type(provider as HTMLSelectElement, 'deepseek-account')
+  expect((model as HTMLSelectElement).value).toBe('deepseek-flash')
   await click(zh.save)
-  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
+  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'deepseek-account', model: 'deepseek-flash' } })
   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
   await type(field<HTMLInputElement>(zh.maxWorkers), '5')
   // An empty root uses the default directory, which the field names instead of looking set.
@@ -48,10 +94,11 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await click('DSH_SUPERAGENT_DIR')
   expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
   await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
-  const [workerProvider, workerModel, effort] = all('.dt-model input')
-  await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
-    'worker-model'); await type(effort as HTMLInputElement, 'high')
-  expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+  const [workerProvider, workerModel, effort] = all('.dt-model select')
+  await type(workerProvider as HTMLSelectElement, 'deepseek-account'); await type(workerModel as HTMLSelectElement,
+    'deepseek-flash'); await type(effort as HTMLSelectElement, 'high')
+  expect([...(all('.dt-model select')[2] as HTMLSelectElement).options].map(option => option.value)).toEqual(['', 'off', 'low',
+    'high', 'max'])
   // Choosing the native engine reveals its executable, model, permission mode, approval handling, effort and Ultracode.
   await type(field<HTMLSelectElement>(zh.executorEngine), 'claude-code')
   await type(field<HTMLInputElement>(zh.claudeBin), '/opt/claude')
@@ -64,10 +111,12 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await type(field<HTMLSelectElement>(zh.directoryMode), 'fixed')
   expect(field<HTMLTextAreaElement>(zh.prepareCommand).closest('.dt-field')!.querySelector('small')?.textContent).toBe(zh.prepareCommandFixed)
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ engine: 'claude-code', maxWorkers: 5, directory: '/srv/work', directoryMode: 'fixed',
+  expect(server.settings.executor).toMatchObject({ engine: 'claude-code', maxWorkers: 5, directory: '/srv/work', directoryMode: 'fixed',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], claudeBin: '/opt/claude',
     claudeModel: 'claude-sonnet-5-5', claudePermissionMode: 'acceptEdits', claudeApproval: 'ask', claudeEffort: 'max',
-    claudeUltracode: true, model: { provider: 'worker-provider', model: 'worker-model', reasoningEffort: 'high' } })
+    claudeUltracode: true, model: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'high' } })
+  // A fresh install seeds no task types; the operator adds them in the panel.
+  expect(server.settings.executor.taskTypes).toEqual([])
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])
 })

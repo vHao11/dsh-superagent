@@ -23,7 +23,8 @@ const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, the native Claude Code executable, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.directoryMode, executor.prepare,
   executor.blockedCommands, executor.engine, executor.claudeBin, executor.claudeModel, executor.claudePermissionMode,
-  executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode])
+  executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode,
+  executor.taskTypes.map(type => [type.id, type.directory, type.directoryMode])])
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -159,9 +160,13 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
-    const model = block === 'eval' ? candidate.eval.model : block === 'executor' ? candidate.executor.model : null
-    const previous = block === 'eval' ? current.eval.model : block === 'executor' ? current.executor.model : null
-    if (model && JSON.stringify(model) !== JSON.stringify(previous)) {
+    const models = block === 'eval' ? [{ model: candidate.eval.model, previous: current.eval.model }]
+      : block === 'executor' ? [{ model: candidate.executor.model, previous: current.executor.model },
+        ...candidate.executor.taskTypes.map(type => ({ model: type.model,
+          previous: current.executor.taskTypes.find(item => item.id === type.id)?.model ?? null }))]
+      : []
+    for (const { model, previous } of models) {
+      if (!model || JSON.stringify(model) === JSON.stringify(previous)) continue
       try { await resolveRoleModel(this.host.context, model) }
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }

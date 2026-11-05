@@ -23,6 +23,7 @@ export interface Api {
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
+  'GET settings/:block': { response: { block: string; revision: number; value: unknown } }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
   'GET threads/:key': { query?: { limit?: number; before?: string; around?: string }; response: ThreadDetailView }
@@ -30,7 +31,7 @@ export interface Api {
   'POST triggers/:id/requeue': { response: { queued: boolean } }
   'GET decisions': { query?: Paged & { kind?: string; window?: '24h' }; response: DecisionListView }
   'POST decisions/:id/dismiss': { response: { dismissed: true } }
-  'GET tickets': { query?: Paged & { state?: TicketFilter }; response: TicketListView }
+  'GET tickets': { query?: Paged & { state?: TicketFilter; taskType?: string }; response: TicketListView }
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }

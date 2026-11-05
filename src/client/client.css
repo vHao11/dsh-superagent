@@ -126,6 +126,9 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
 .dt-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .dt-rows-item { display: grid; grid-template-columns: repeat(var(--dt-columns), minmax(0, 1fr)) auto; gap: 8px; align-items: center; }
+.dt-rows-head { align-items: end; padding: 0 0 2px; }
+.dt-rows-head-cell { min-width: 0; padding-left: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-rows-textarea { min-height: 38px; resize: vertical; line-height: 18px; }
 .dt-filter-gap { flex: 1; }
 .dt-page-head { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .dt-page-head > .dt-btn { margin-left: -10px; }

@@ -69,37 +69,79 @@ export function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
-export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
+type ModelGroup = ApiResponse<'GET models'>['groups'][number]
+/**
+ * The model as three single-line dropdowns, like every other select: the Provider, the models that Provider lists, and
+ * the reasoning efforts the chosen model offers. A select always lists its whole catalog, so a saved route never hides
+ * the other Providers; empty means inherit, and a saved value outside the catalog stays selectable so a custom route
+ * survives a catalog change. When the catalog is unavailable the same fields fall back to free text.
+ */
+export function ModelField({ value, onChange, inherit }: { value: RoleModel; onChange: (next: RoleModel) => void; inherit?: string }) {
   const { t, call } = usePanel()
   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
   const [error, setError] = useState<string>()
   useEffect(() => { call('GET models').then(setCatalog, failure => setError(errorText(failure))) }, [call])
   const current = { provider: value?.provider ?? '', model: value?.model ?? '', effort: value?.reasoningEffort ?? '' }
+  const inheritLabel = inherit ?? t('modelInherit')
   const set = (next: Partial<typeof current>) => {
     const { provider, model, effort } = { ...current, ...next }
     onChange(provider.trim() || model.trim() || effort.trim() ? { provider, model, ...effort ? { reasoningEffort: effort } : {} } : null)
   }
-  const models = catalog?.groups.find(group => group.id === current.provider.trim())?.models ?? []
+  const groups = catalog?.groups ?? []
+  const listed = groups.find(group => group.id === current.provider.trim())?.models ?? []
+  const efforts = listed.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []
+  const keepsEffort = (models: ModelGroup['models'], model: string): boolean =>
+    (models.find(item => item.id === model)?.reasoning?.efforts ?? []).some(item => item.id === current.effort)
+  /** Provider and model are one route: another Provider's model is not kept, and a Provider with models takes its first. */
+  const chooseProvider = (provider: string) => {
+    const models = groups.find(group => group.id === provider)?.models ?? []
+    const kept = provider === current.provider.trim() && models.some(item => item.id === current.model.trim())
+    const model = kept ? current.model : models[0]?.id ?? ''
+    set({ provider, model, effort: keepsEffort(models, model) ? current.effort : '' })
+  }
+  const chooseModel = (model: string) => set({ model, effort: keepsEffort(listed, model) ? current.effort : '' })
   const fallback = catalog?.default
-  const input = (name: keyof typeof current, label: string, placeholder: string) => <Field label={label}>
-    <Input list={`${id}-${name}s`} spellCheck={false} placeholder={placeholder} value={current[name]}
-      onChange={event => set({ [name]: event.target.value })} />
-  </Field>
+  const unavailable = !!error || (catalog !== undefined && !groups.length)
   return <div className="dt-model">
     <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
       ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
-    <div className="dt-grid3">
-      {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
-        t('modelEffort'), t('modelEffortDefault'))}
-    </div>
-    <datalist id={`${id}-providers`}>{catalog?.groups.map(group => <option key={group.id}
-      value={group.id}>{group.name}</option>)}</datalist>
-    <datalist id={`${id}-models`}>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</datalist>
-    <datalist id={`${id}-efforts`}>
-      {(models.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []).map(effort => <option key={effort.id}
-        value={effort.id}>{effort.name}</option>)}
-    </datalist>
+    {unavailable ? <div className="dt-grid3">
+      <Field label={t('modelProvider')}><Input spellCheck={false} placeholder={inheritLabel} value={current.provider}
+        onChange={event => set({ provider: event.target.value })} /></Field>
+      <Field label={t('modelName')}><Input spellCheck={false} placeholder={inheritLabel} value={current.model}
+        onChange={event => set({ model: event.target.value })} /></Field>
+      <Field label={t('modelEffort')}><Input spellCheck={false} placeholder={t('modelEffortDefault')} value={current.effort}
+        onChange={event => set({ effort: event.target.value })} /></Field>
+    </div> : <div className="dt-grid3">
+      <Field label={t('modelProvider')}>
+        <select className="dt-select" value={current.provider} disabled={!groups.length}
+          onChange={event => chooseProvider(event.target.value)}>
+          <option value="">{inheritLabel}</option>
+          {groups.map(group => <option key={group.id} value={group.id}>{group.name || group.id}</option>)}
+          {current.provider && !groups.some(group => group.id === current.provider)
+            && <option value={current.provider}>{current.provider}</option>}
+        </select>
+      </Field>
+      <Field label={t('modelName')}>
+        <select className="dt-select" value={current.model} disabled={!current.provider}
+          onChange={event => chooseModel(event.target.value)}>
+          {!current.model && <option value="">{current.provider ? t('modelChoose') : inheritLabel}</option>}
+          {listed.map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+          {current.model && !listed.some(model => model.id === current.model)
+            && <option value={current.model}>{current.model}</option>}
+        </select>
+      </Field>
+      <Field label={t('modelEffort')}>
+        <select className="dt-select" value={current.effort} disabled={!efforts.length && !current.effort}
+          onChange={event => set({ effort: event.target.value })}>
+          <option value="">{t('modelEffortDefault')}</option>
+          {efforts.map(effort => <option key={effort.id} value={effort.id}>{effort.name || effort.id}</option>)}
+          {current.effort && !efforts.some(effort => effort.id === current.effort)
+            && <option value={current.effort}>{current.effort}</option>}
+        </select>
+      </Field>
+    </div>}
   </div>
 }
 
@@ -186,12 +228,21 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
   // Exclude options already selected in another row.
   const choices = (id: string) => Object.entries(labels).filter(([option]) => option === id
     || !rows.some(other => other[key.key] === option)).sort(byName)
-  const blank = Object.fromEntries(field.columns.map(column => [column.key, column.type === 'select' ? column.options[0]!.value : '']))
+  // Optional columns stay out of a blank row: an empty cell is absence, not an empty value the schema must accept.
+  const blank = Object.fromEntries(field.columns.filter(column => column.type !== 'text' || !column.optional).map(column => [column.key, column.type === 'select' ? column.options[0]!.value : '']))
   // Summarize a row by its second column only when that column is free text (e.g., a display name), not a select option.
   const named = field.columns[1]?.type === 'text' ? field.columns[1] : undefined
   const rowName = (row: Row) => (named && row[named.key]) || labels[row[key.key] ?? ''] || row[key.key] || ''
+  // Widths are fr units; the last grid track holds the remove button.
+  const template = [...field.columns.map(column => `minmax(0, ${column.width ?? 1}fr)`), 'auto'].join(' ')
   const cell = (row: Row, index: number, column: Column) => {
-    const id = row[key.key] ?? '', change = (next: string) => set(index, { ...row, [column.key]: next })
+    const id = row[key.key] ?? ''
+    const change = (next: string) => {
+      const updated = { ...row, [column.key]: next }
+      // Clearing an optional cell removes it, so the saved row keeps the schema's optional meaning.
+      if (column.type === 'text' && column.optional && next === '') delete updated[column.key]
+      set(index, updated)
+    }
     if (column === key && (savedKeys.has(id) || (!choose && labels[id]))) {
       return <span key={column.key} className={labels[id] ? 'dt-row-label' : 'dt-row-label dt-mono'} title={id}>{labels[id] ?? id}</span>
     }
@@ -207,6 +258,11 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
         onChange={event => change(event.target.value)}>
         {column.options.map(option => <option key={option.value} value={option.value}>{localized(t, option.label)}</option>)}
       </select>
+    }
+    if (column.multiline) {
+      return <textarea key={column.key} className="dt-textarea dt-rows-textarea" aria-label={localized(t, column.label)}
+        placeholder={localized(t, column.label)} required={!column.optional} spellCheck={false} rows={2} value={row[column.key] ?? ''}
+        onChange={event => change(event.target.value)} />
     }
     return <Input key={column.key} className={column.optional ? undefined : 'dt-mono'} aria-label={localized(t, column.label)}
       placeholder={localized(t, column.label)}
@@ -228,8 +284,12 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
       onClick={() => setOpen(!open)}>
       {open ? t('collapse') : rows.map(rowName).join(t('listSeparator'))}
     </button>}
-    {(rows.length <= ROWS_SHOWN || open) && <ul className="dt-rows"
-      style={{ ['--dt-columns' as string]: field.columns.length }}>{rows.map((row, index) => <li key={index} className="dt-rows-item">
+    {(rows.length <= ROWS_SHOWN || open) && <ul className="dt-rows">
+      <li className="dt-rows-item dt-rows-head" style={{ gridTemplateColumns: template }} aria-hidden="true">
+        {field.columns.map(column => <span key={column.key} className="dt-rows-head-cell">{localized(t, column.label)}</span>)}
+        <span />
+      </li>
+      {rows.map((row, index) => <li key={index} className="dt-rows-item" style={{ gridTemplateColumns: template }}>
       {field.columns.map(column => cell(row, index, column))}
       <Button variant="ghost" size="sm" icon={<Icon name="trash" />} aria-label={t('removeRow', { name: labels[row[key.key] ?? '']
         || row[key.key] || label })}

@@ -5,6 +5,16 @@ import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
+import type { Settings } from '../src/client/api.ts'
+
+const seededTaskTypes = (): Settings['executor']['taskTypes'] => [
+  { id: 'env-fix', name: '环境修复类问题', description: '修复构建环境与依赖问题', examples: [], not: [], directory: '/srv/work/env-fix',
+    model: null, directoryMode: 'fixed', instructions: '' },
+  { id: 'jzjy', name: '集中交易类问题', description: '集中交易相关的问题修复', examples: [], not: [], directory: '/srv/work/jzjy',
+    model: null, directoryMode: 'fixed', instructions: '' },
+  { id: 'zrt', name: '转融通系统问题', description: '转融通系统相关的问题修复', examples: [], not: [], directory: '/srv/work/zrt',
+    model: null, directoryMode: 'fixed', instructions: '' },
+]
 
 usePanel()
 it('lists Tickets under Execution by who they wait on, with the Executor state and its pause as an action', async () => {
@@ -38,6 +48,79 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   await click(tab(zh['tab.settings']))
   await click(zh.save)
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
+})
+
+it('shows the task type a Ticket was accepted with and how it was chosen', async () => {
+  const typed = { taskType: 'docs', taskTypeName: '文档' }
+  server.tickets.open = [ticketSummary({ ...typed, taskTypeSource: 'model' })]
+  server.ticketDetails.t1 = { ...server.ticketDetails.t1!, ...typed, taskTypeSource: 'source' }
+  await mount()
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.taskTypeLabel)
+  expect(text()).toContain('文档')
+  expect(all('.dt-ticket-meta .dt-hint').map(hint => hint.textContent)).toContain(` · ${zh.taskTypeSourceModel}`)
+  await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
+  expect(document.querySelector('.dt-status-line')?.textContent).toContain(zh.taskTypeSourceSource)
+  await click(zh.identifiers)
+  expect(all('.dt-kv .dt-hint').map(hint => hint.textContent)).toContain(` · ${zh.taskTypeSourceSource}`)
+})
+
+it('filters the open Tickets by task type from the route', async () => {
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, taskTypes: seededTaskTypes() } }
+  server.tickets.open = [ticketSummary({ taskType: 'env-fix', taskTypeName: '环境修复类问题' }),
+    ticketSummary({ id: 't2', title: '文档工单', taskType: 'docs', taskTypeName: '文档' })]
+  await mount()
+  await click(zh['tab.execution'])
+  const select = field<HTMLSelectElement>(zh.ticketTypeFilter)
+  expect([...select.options].map(option => option.textContent)).toEqual([zh.ticketTypeAll, '环境修复类问题', '集中交易类问题', '转融通系统问题'])
+  await type(select, 'env-fix')
+  expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20&taskType=env-fix')).toBe(true)
+  expect(text()).toContain('环境修复类问题')
+  expect(text()).not.toContain('文档工单')
+})
+
+it('edits one task type at a time from a selector, folding the others and keeping each type\'s own edits', async () => {
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, taskTypes: seededTaskTypes() } }
+  at({ page: 'settings', query: { group: 'execution' } })
+  await mount()
+  const selector = () => field<HTMLSelectElement>(zh.taskTypeSelect)
+  // The seeded types fold into one selector, and only the chosen type's form is rendered.
+  expect([...selector().querySelectorAll('option')].map(option => option.textContent)).toEqual(['环境修复类问题', '集中交易类问题', '转融通系统问题'])
+  expect(all('label').filter(label => label.textContent === zh.taskTypeName)).toHaveLength(1)
+  expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('env-fix')
+  // Choosing a type shows that type's values.
+  await type(selector(), '1')
+  expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('jzjy')
+  expect(field<HTMLTextAreaElement>(zh.taskTypeDescription).value).toContain('集中交易')
+  // An edit belongs to its type, not to the selector position.
+  await type(field<HTMLTextAreaElement>(zh.taskTypeInstructions), '只改集中交易相关代码')
+  await type(selector(), '2')
+  expect(field<HTMLTextAreaElement>(zh.taskTypeInstructions).value).toBe('')
+  await type(selector(), '1')
+  expect(field<HTMLTextAreaElement>(zh.taskTypeInstructions).value).toBe('只改集中交易相关代码')
+  // Adding opens the new type; removing it selects a remaining one.
+  await click(zh.taskTypeAdd)
+  expect([...selector().querySelectorAll('option')]).toHaveLength(4)
+  expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('custom-4')
+  await click(zh.taskTypeRemove)
+  expect([...selector().querySelectorAll('option')]).toHaveLength(3)
+  expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('zrt')
+  await click(zh.save)
+  expect(server.settings.executor.taskTypes.map(type => type.id)).toEqual(['env-fix', 'jzjy', 'zrt'])
+  expect(server.settings.executor.taskTypes[1]!.instructions).toBe('只改集中交易相关代码')
+  // There is no default type any more, so the panel never sends the removed setting.
+  expect(server.requests.find(request => request.path === 'settings/executor')?.body).not.toHaveProperty('value.defaultTaskType')
+})
+
+it('starts an empty task type list with an add action instead of a form', async () => {
+  at({ page: 'settings', query: { group: 'execution' } })
+  await mount()
+  expect(server.settings.executor.taskTypes).toEqual([])
+  expect(text()).toContain(zh.taskTypesRule)
+  expect(text()).toContain(zh.taskTypeEmpty)
+  await click(zh.taskTypeAdd)
+  expect([...field<HTMLSelectElement>(zh.taskTypeSelect).querySelectorAll('option')].map(option => option.textContent)).toEqual(['custom-1'])
+  expect(field<HTMLInputElement>(zh.taskTypeId).value).toBe('custom-1')
 })
 
 it('stops an open Ticket from its page after confirmation', async () => {

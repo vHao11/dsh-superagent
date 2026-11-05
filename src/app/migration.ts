@@ -1,5 +1,5 @@
 /**
- * Migrates a schema 10 database to schema 11 in a single transaction so runtime readers never convert legacy shapes.
+ * Migrates a schema 10 or 11 database to schema 12 in a single transaction so runtime readers never convert legacy shapes.
  * Databases older than schema 10 are rejected: this version cannot migrate them.
  */
 import { basename } from 'node:path'
@@ -17,7 +17,7 @@ import type { SettingsVersion, Store } from './store.ts'
 import { Versions } from './versions.ts'
 import { KV, type Key } from '../kv.ts'
 
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 /** The oldest database schema version this build can open and migrate directly. */
 export const OLDEST_SCHEMA = 10
 /** Returns an error message explaining why `version` cannot be opened: older schemas need a new state directory. */
@@ -88,6 +88,31 @@ export function migrateTo11(store: Store): void {
   }
   step('the reasons', () => { reasonsAsCodes(store) })
   step('the Triggers\' times', () => { triggerTimes(store) })
+}
+/**
+ * Rewrite all schema 11 records into their schema 12 shapes in place: the executor's removed default task type no longer
+ * exists, so current and historical settings drop it before the current schema parses them strictly.
+ */
+export function migrateTo12(store: Store): void {
+  step('the settings', () => {
+    for (const name of ['settings', ...store.keys('settings-version:')]) {
+      const value = store.get<unknown>(name)
+      if (name === 'settings') {
+        if (isObject(value)) store.set(name, withoutDefaultTaskType(value))
+        continue
+      }
+      const version = value as { source: string; settings: unknown }
+      if (!isObject(version) || !isObject(version.settings)) continue
+      store.set(name, { ...version, settings: withoutDefaultTaskType(version.settings) })
+    }
+  })
+}
+/** Drops the executor's removed default task type from a stored settings record, keeping every other field. */
+function withoutDefaultTaskType(value: Stored): Stored {
+  const { executor, ...rest } = value as { executor?: Stored }
+  if (!isObject(executor)) return value
+  const { defaultTaskType: _defaultTaskType, ...kept } = executor
+  return { ...rest, executor: kept }
 }
 /**
  * Normalize trigger and thread timestamps to fixed-width millisecond ISO strings so lexicographical text order matches
@@ -222,8 +247,8 @@ export function migrateSettings(value: unknown): unknown {
 }
 function withoutRemovedFields(value: Stored): Stored {
   const { executor, policy, sources, ...rest } = value as { executor?: Stored; policy?: Stored; sources?: Record<string, Stored> }
-  // `paused` is now a top-level setting rather than a field on `executor`.
-  const { reviewer: _reviewer, visualReviewer: _visualReviewer, branchPrefix: _branchPrefix, paused, ...kept } = executor ?? {}
+  // `paused` is now a top-level setting rather than a field on `executor`; `defaultTaskType` was removed with required classification.
+  const { reviewer: _reviewer, visualReviewer: _visualReviewer, branchPrefix: _branchPrefix, paused, defaultTaskType: _defaultTaskType, ...kept } = executor ?? {}
   const { members, memberChat, autoMergeLineLimit: _limit, rules: storedRules, ...policyRest } = policy ?? {}
   const rules = Array.isArray(storedRules) ? storedRules.map((rule: unknown) => { if (!isObject(rule)) return rule; const { visual: _visual, ...fields } = rule; return fields })
     : storedRules

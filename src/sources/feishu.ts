@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
+import { TaskTypeIdSchema } from '../policy.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
 import { feishuThreadContext } from './feishu-read.ts'
 import { refreshChatNames, runFeishu } from './feishu-loops.ts'
@@ -21,7 +22,8 @@ const MembersSchema = z.looseObject({
 const FeishuConfigSchema = FeishuBotSchema.extend({
   readPageSize: z.number().int().min(1).max(50).default(20),
   linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
-  chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']) }).strict())
+  chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']),
+    taskType: TaskTypeIdSchema.optional() }).strict())
     .refine(chats => new Set(chats.map(chat => chat.chatId)).size === chats.length, 'Duplicate chat IDs')
     .default([]),
   directMessages: z.boolean().default(true),
@@ -42,6 +44,7 @@ export const feishuKind: SourceKind<FeishuConfig> = {
       columns: [
         { key: 'chatId', type: 'text', label: { zh: '群', en: 'Chat' }, pattern: 'oc_[a-zA-Z0-9]+', choose: { zh: '选择机器人已加入的群', en: 'Choose a chat the bot has joined' }, refresh: { zh: '刷新群列表', en: 'Refresh chats' } },
         { key: 'listen', type: 'select', label: { zh: '接收', en: 'Receive' }, options: [{ value: 'mentions', label: { zh: '仅 @', en: '@ only' } }, { value: 'all', label: { zh: '全部消息', en: 'All' } }] },
+        { key: 'taskType', type: 'text', optional: true, pattern: '^[a-z][a-z0-9-]{0,63}$', label: { zh: '默认任务类型', en: 'Default task type' } },
       ] },
     { key: 'otherChats', type: 'select', label: { zh: '其他群', en: 'Other chats' }, options: [{ value: 'none', label: { zh: '不接收', en: 'Not received' } }, { value: 'mentions', label: { zh: '仅 @', en: '@ only' } }],
       hint: { zh: '机器人已加入、但没列在上面的群。“仅 @”接收那里 @ 机器人的消息；谁的消息能发起工作看策略里的准入。', en: 'Chats the bot has joined that are not listed above. "@ only" receives messages there that mention the bot; whose messages may originate work is the Policy\'s admission.' } },
@@ -56,6 +59,13 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     const chat = config.chats.find(item => item.chatId === meta.chatId)
     if (chat) return { listened: true, observed: chat.listen === 'all', row: chat.chatId }
     return config.otherChats === 'mentions' ? { listened: true, observed: false, row: 'other' } : { listened: false, reason: 'chat_not_allowed' }
+  },
+  // Only a chat message (not a direct message) in a listed chat takes that chat row's default task type.
+  taskType(trigger, config) {
+    if (trigger.meta.direct === true) return undefined
+    const chatId = trigger.meta.chatId
+    if (typeof chatId !== 'string') return undefined
+    return config.chats.find(chat => chat.chatId === chatId)?.taskType
   },
   // A reply goes only to a chat the Source still receives.
   channel: {

@@ -9,7 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import { classifyTaskType, unclassifiedTaskTypeError, type Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -93,9 +93,12 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
 }
-/** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
+/** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text.
+ * @param sourceDefault Task type configured as the origin Trigger's Source default, when it has one.
+ * @throws UserError when task types are configured but the ticket's work cannot be classified.
+ */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
-  stateDir: string): Execution {
+  stateDir: string, sourceDefault?: string): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
@@ -107,9 +110,23 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
+  // An Eval decision and a routed accept both name their type; a Source default applies when neither names one.
+  const evidence = outcome.taskTypeSource === 'model' ? { model: outcome.taskType, source: sourceDefault }
+    : outcome.taskTypeSource === 'source' ? { source: sourceDefault }
+      : { explicit: outcome.taskType, source: sourceDefault }
+  const choice = classifyTaskType(settings, evidence)
+  // Work cannot proceed unclassified: configured task types require one; an unknown explicit id is refused as well.
+  if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
   const root = executionRoot(settings, stateDir)
-  const directory = settings.executor.directoryMode === 'fixed' ? root : join(root, name)
-  return { name, directory, assignment, engine: outcome.engine ?? settings.executor.engine }
+  const engine = outcome.engine ?? settings.executor.engine
+  // Without task types the legacy executor directory applies unchanged.
+  if (choice.source === 'legacy')
+    return { name, directory: settings.executor.directoryMode === 'fixed' ? root : join(root, name), assignment, engine }
+  const type = choice.type
+  // A task type owns its root and mode.
+  const directory = type.directoryMode === 'fixed' ? type.directory : join(type.directory, name)
+  return { name, directory, assignment, engine, taskType: type.id, taskTypeSource: choice.source,
+    directoryMode: type.directoryMode, model: type.model ?? settings.executor.model, instructions: type.instructions }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -238,7 +255,8 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const trigger = sourceTrigger(this.host, ticket)
+    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, trigger?.taskType) }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -251,7 +269,8 @@ export class DshExecutor implements Executor {
   private async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
     const { directoryMode, prepare } = this.host.store.settings().executor
-    const command = directoryMode === 'fixed' ? '' : prepare.trim()
+    // A fixed task type owns a checkout that already exists; only per-ticket mode creates and prepares a workspace.
+    const command = (ticket.execution?.directoryMode ?? directoryMode) === 'fixed' ? '' : prepare.trim()
     await mkdir(dirname(directory), { recursive: true })
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.

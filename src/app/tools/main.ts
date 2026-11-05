@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { ENGINE_NAMES, UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
+import { classifyTaskType, unclassifiedTaskTypeError } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
@@ -52,6 +53,7 @@ const RouteItemSchema = z.object({
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
+  taskType: z.string().trim().max(64).nullish().describe('accept: the id of one task type from the Task types prompt section. Required when task types are configured and the trigger\'s Source sets no default; work cannot proceed unclassified.'),
   engine: z.enum(ENGINE_NAMES).nullish().describe('accept: the worker engine for this ticket, overriding the executor setting.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
@@ -65,6 +67,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
+  taskType: { check: z.string().max(64), reads: ['accept'], needs: [] },
   engine: { check: z.enum(ENGINE_NAMES), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
 }
@@ -95,9 +98,19 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   if (earlier && item.kind === 'ignore') return { refused: `Decided in this call with ${earlier}, whose Decision took its batch` }
   switch (item.kind) {
     case 'accept': {
+      // Work cannot proceed unclassified: classify before deciding so the item is refused with a reason the sorter can act on.
+      const settings = host.store.settings()
+      if (settings.executor.taskTypes.length > 0) {
+        const trigger = host.store.triggers.get(item.trigger_id)
+        if (trigger) {
+          const choice = classifyTaskType(settings, { explicit: item.taskType, source: trigger.taskType })
+          if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
+        }
+      }
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...(item.engine ? { engine: item.engine } : {}) })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...(item.engine ? { engine: item.engine } : {}),
+        ...(item.taskType ? { taskType: item.taskType } : {}) })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -157,6 +170,7 @@ const OperatorTaskSchema = z.object({
   title: z.string().trim().min(1).max(200).describe('A short label in the person\'s language, with no added requirements.'),
   request: z.string().trim().min(1).max(20000).describe('The person\'s request, copied as written; no added plan, criteria or instructions.'),
   worktree_name: WorktreeNameSchema.optional(),
+  taskType: z.string().trim().max(64).optional().describe('The id of one task type from the Task types prompt section. Required when task types are configured: work cannot proceed unclassified.'),
   engine: z.enum(ENGINE_NAMES).optional().describe('claude-code for the native Claude Code agent, dsh for DSH\'s agent; omit for the executor setting.'),
 }).strict()
 /**
@@ -172,8 +186,14 @@ function taskStartTool(host: MainToolsHost): Tool {
       const started = tasks.map(task => {
         const head = { title: task.title }
         try {
+          // An operator task has no Source, so only the person's explicit type can classify it.
+          const settings = host.store.settings()
+          if (settings.executor.taskTypes.length > 0) {
+            const choice = classifyTaskType(settings, { explicit: task.taskType })
+            if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
+          }
           const decision = host.engine.startTask({ title: task.title, request: task.request, name: task.worktree_name ?? 'task',
-            ...(task.engine ? { engine: task.engine } : {}) })
+            ...(task.engine ? { engine: task.engine } : {}), ...(task.taskType ? { taskType: task.taskType } : {}) })
           const ticket = decision.ticketId ? host.store.tickets.get(decision.ticketId) : undefined
           return { ...head, trigger_id: decision.triggerIds[0], decision: decision.kind, reason: reasonText(decision.reason),
             ...(ticket ? { ticket: ticketCard(ticket) } : {}) }

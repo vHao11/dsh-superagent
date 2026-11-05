@@ -209,7 +209,7 @@ function EvalBlock() {
           onChange={event => edit({ timeoutSeconds: event.target.value })} />
       </Field>
       <Section title={t('assessorModel')} hint={t('assessorModelHint')}>
-        <ModelField id="dt-eval-model" value={value.model} onChange={model => edit({ model })} />
+        <ModelField value={value.model} onChange={model => edit({ model })} />
       </Section>
     </Fields>
     <SaveBar {...draft} onDiscard={draft.discard} />
