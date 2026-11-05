@@ -9,7 +9,9 @@
 
   The script:
     1. optionally fast-forwards the checkout (git pull --ff-only);
-    2. installs dependencies when node_modules is missing (pnpm when available, otherwise npm);
+    2. installs dependencies when node_modules is missing: the pnpm version pinned in
+       package.json through corepack first (honours pnpm-lock.yaml exactly), then the local
+       pnpm, then npm;
     3. builds lib/ with the package's own build script;
     4. for every DSH profile whose package.json depends on dsh-superagent, rewrites that
        dependency to "link:<this checkout>" (backing up package.json first) and re-links the
@@ -26,7 +28,13 @@
 
 .PARAMETER ProxyPort
   Route git through the local pinned-IP proxy on 127.0.0.1:<port>
-  (tools/github-pin-proxy.mjs). Use on networks that cannot resolve api.github.com.
+  (tools/github-pin-proxy.mjs) for the optional -Update pull. Use on networks whose DNS
+  cannot resolve api.github.com. The proxy is only exported while git runs, so npm/pnpm
+  keep talking to their configured registry.
+
+.PARAMETER Registry
+  npm registry to use for dependency install (both pnpm and npm), for company mirrors that
+  do not carry every package. Example: https://registry.npmjs.org/
 
 .PARAMETER SkipDeps
   Do not install dependencies; only build and re-link.
@@ -48,6 +56,7 @@ param(
     [string[]] $Profile,
     [switch] $Update,
     [int] $ProxyPort = 0,
+    [string] $Registry = '',
     [switch] $SkipDeps,
     [switch] $SkipBuild,
     [switch] $DryRun
@@ -68,9 +77,7 @@ $linkValue = 'link:' + ($root -replace '\\', '/')
 
 if ($ProxyPort -gt 0) {
     $proxyUrl = "http://127.0.0.1:$ProxyPort"
-    $env:HTTP_PROXY = $proxyUrl
-    $env:HTTPS_PROXY = $proxyUrl
-    Write-Sub "git/network via pinned-IP proxy $proxyUrl"
+    Write-Sub "git operations will use the pinned-IP proxy $proxyUrl (-ProxyPort)"
 }
 
 Write-Step "Checkout: $root"
@@ -102,8 +109,17 @@ if ($Update) {
     if ($DryRun) {
         Write-Note 'git pull --ff-only (skipped)'
     } else {
-        & git -C $root pull --ff-only
-        if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+        $savedHttp = $env:HTTP_PROXY
+        $savedHttps = $env:HTTPS_PROXY
+        if ($ProxyPort -gt 0) { $env:HTTP_PROXY = $proxyUrl; $env:HTTPS_PROXY = $proxyUrl }
+        try {
+            & git -C $root pull --ff-only
+            $pullExit = $LASTEXITCODE
+        } finally {
+            $env:HTTP_PROXY = $savedHttp
+            $env:HTTPS_PROXY = $savedHttps
+        }
+        if ($pullExit -ne 0) { throw "git pull failed (exit $pullExit)" }
         Write-Ok 'checkout updated'
     }
 }
@@ -116,17 +132,64 @@ if ($SkipDeps) {
     Write-Step 'Dependencies: already installed'
 } else {
     Write-Step 'Install dependencies'
+    $pkgJson = Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json
+    $pinnedPnpm = if ($pkgJson.packageManager -match '^pnpm@(.+)$') { $matches[1] } else { $null }
+    $corepack = Get-Command corepack -ErrorAction SilentlyContinue
     $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+    $registryArg = if ($Registry) { "--registry=$Registry" } else { $null }
+    if ($Registry) { $env:COREPACK_NPM_REGISTRY = $Registry }
+
     if ($DryRun) {
-        Write-Note $(if ($pnpm) { 'pnpm install' } else { 'npm install --no-package-lock' }) + ' (skipped)'
-    } elseif ($pnpm) {
-        & pnpm install --dir $root
-        if ($LASTEXITCODE -ne 0) { throw "pnpm install failed (exit $LASTEXITCODE)" }
-        Write-Ok 'pnpm install done'
+        if ($corepack -and $pinnedPnpm) { $plan = "corepack pnpm@$pinnedPnpm install --frozen-lockfile" }
+        elseif ($pnpm) { $plan = 'pnpm install --frozen-lockfile' }
+        else { $plan = 'npm install --no-package-lock' }
+        Write-Note "$plan (skipped)"
     } else {
-        & npm install --prefix $root --no-package-lock --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)" }
-        Write-Ok 'npm install done'
+        $installed = $false
+
+        if ($corepack -and $pinnedPnpm) {
+            # pnpm refuses to run when the pinned version cannot be resolved from the
+            # registry; corepack pins the exact version from packageManager, and with
+            # --frozen-lockfile the install uses pnpm-lock.yaml as-is.
+            Write-Sub "corepack pnpm@$pinnedPnpm install --frozen-lockfile ..."
+            $cmdArgs = @("pnpm@$pinnedPnpm", 'install', '--frozen-lockfile')
+            if ($registryArg) { $cmdArgs += $registryArg }
+            Push-Location $root
+            try { & corepack @cmdArgs } finally { Pop-Location }
+            $installed = ($LASTEXITCODE -eq 0)
+            if (-not $installed) { Write-Note "corepack install failed (exit $LASTEXITCODE)" }
+        }
+
+        if (-not $installed -and $pnpm) {
+            Write-Sub 'pnpm install --frozen-lockfile ...'
+            $cmdArgs = @('install', '--frozen-lockfile')
+            if ($registryArg) { $cmdArgs += $registryArg }
+            $env:npm_config_manage_package_manager_versions = 'false'
+            try {
+                Push-Location $root
+                try { & pnpm @cmdArgs } finally { Pop-Location }
+            } finally {
+                Remove-Item Env:npm_config_manage_package_manager_versions -ErrorAction SilentlyContinue
+            }
+            $installed = ($LASTEXITCODE -eq 0)
+            if (-not $installed) { Write-Note "pnpm install failed (exit $LASTEXITCODE)" }
+        }
+
+        if (-not $installed) {
+            Write-Sub 'npm install --no-package-lock ...'
+            $cmdArgs = @('install', '--no-package-lock', '--no-audit', '--no-fund')
+            if ($registryArg) { $cmdArgs += $registryArg }
+            Push-Location $root
+            try { & npm @cmdArgs } finally { Pop-Location }
+            $installed = ($LASTEXITCODE -eq 0)
+        }
+
+        if (-not $installed) {
+            throw ('Dependency install failed. Check registry access and retry, or add ' +
+                '-Registry https://registry.npmjs.org/ when the internal mirror is incomplete. ' +
+                'You can also copy node_modules from a machine where the build works and rerun with -SkipDeps.')
+        }
+        Write-Ok 'dependencies installed'
     }
 }
 
@@ -243,3 +306,4 @@ Write-Sub ("profiles now on this checkout: " + (($touched | Sort-Object -Unique)
 Write-Note 'Restart the DSH process that hosts those profiles so it reloads lib/:'
 Write-Sub  '  - panel/web UI: close it and start it again (or restart the profile service)'
 Write-Sub  '  - superagent service: scripts\dsh-superagent.cmd restart --profile superagent'
+exit 0

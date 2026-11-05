@@ -47,13 +47,20 @@ powershell -ExecutionPolicy Bypass -File D:\aiworkspace\dsh-superagent\scripts\i
 脚本按顺序做：
 
 1. 需要时 `git pull --ff-only`（加 `-Update` 才做）；
-2. `node_modules` 缺失时装依赖（有 pnpm 用 pnpm，否则 `npm install --no-package-lock`）；
+2. `node_modules` 缺失时装依赖：优先用 **corepack 指定的 pnpm**（与 `packageManager: pnpm@11.7.0` 一致，
+   `--frozen-lockfile` 精确按 `pnpm-lock.yaml` 安装），其次本机 pnpm，最后 npm；
 3. `npm run build` 构建 `lib/`（DSH 运行时读的就是它，**没有 `lib/` 或用旧 `lib/` 都等于没切换**）；
 4. 扫描 `<DSH_HOME>\profiles\*`，把依赖 `dsh-superagent` 改写成 `link:<这个仓库>`，改之前备份
    `package.json.bak-<时间戳>`，再执行 `dsh plugin --profile <名字> install` 重建 `node_modules` 链接；
 5. 打印要重启什么。
 
 只想改某个 profile 时加 `-Profile web`（或 `-Profile superagent`）。
+
+公司镜像（Artifactory）缺包、装依赖失败时，换公共源重试：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aiworkspace\dsh-superagent\scripts\install-other-machine.ps1 -Registry https://registry.npmjs.org/
+```
 
 ## 3. 重启，让新版本生效
 
@@ -80,7 +87,9 @@ $env:HTTP_PROXY  = 'http://127.0.0.1:8899'
 $env:HTTPS_PROXY = 'http://127.0.0.1:8899'
 ```
 
-`scripts\install-other-machine.ps1 -Update -ProxyPort 8899` 也会替你设置这两个变量。
+`scripts\install-other-machine.ps1 -Update -ProxyPort 8899` 会在执行 `git pull` 时临时设置这两个变量，
+跑完即恢复——不要让代理常驻，否则 npm/pnpm 访问公司 Artifactory 也会被带着走代理而失败。
+装依赖失败时用 `-Registry https://registry.npmjs.org/` 换公共源（见第 2 节）。
 
 IP 会随 GitHub 调度漂移，失效时改 `tools/github-pin-proxy.mjs` 里的 `PINS`（先用 `Test-NetConnection <ip> -Port 443` 验）。
 
@@ -97,7 +106,8 @@ powershell -ExecutionPolicy Bypass -File D:\aiworkspace\dsh-superagent\scripts\i
 | 现象 | 原因与处理 |
 |---|---|
 | 切换后行为没变 | DSH 加载的是 `lib/`。确认构建成功、`lib/index.js` 的修改时间是最新的，并重启宿主进程。 |
-| `pnpm` 报 `resolve pnpm@11.7.0 … 404` | 仓库把 pnpm 版本 pin 在 `packageManager`，公司 Artifactory 没有这个版本。脚本在有 pnpm 时用本机 pnpm，没有时用 `npm install --no-package-lock`，不影响构建。 |
+| `pnpm` 报 `resolve pnpm@11.7.0 … 404` / `Not Found` | 仓库把 pnpm 版本 pin 在 `packageManager`，pnpm 会尝试从当前 registry 解析这个版本。脚本改用 `corepack pnpm@11.7.0`（Node 自带 corepack，从公共源取 pnpm 本体），并按 `--frozen-lockfile` 精确安装，避开本机 pnpm 版本不匹配导致的整树重解析。 |
+| 装依赖报 `404`（Artifactory 缺包，如 `@asamuzakjp/*`） | 公司镜像没有镜像全量 npm 包。加 `-Registry https://registry.npmjs.org/` 重跑（脚本会用它装依赖，同时用于 corepack 取 pnpm）。 |
 | `dsh plugin --profile … install` 失败 | 多半是源/网络问题。修好后手动重跑这句；也可以直接在 profile 目录里 `pnpm install`。 |
 | 面板打不开 / `/orchestrator/api/*` 全 404 | 多半是插件没重新加载，或 `stateDir` 的锁没释放。先干净重启宿主进程；仍是 404 再看 `stateDir\*.lock`。 |
 | 测试有一批失败 | `npm test` 里有一部分用例依赖 Linux 工具（`tmux`、`sleep`、Python 脚本语义），Windows 上属已知失败，基线同样如此；类型检查和构建应保持通过。 |
