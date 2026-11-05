@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import type { Trigger } from '../src/core/index.ts'
+import { TaskTypeSchema } from '../src/policy.ts'
+import { workToolsFor } from '../src/app/sessions.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
@@ -11,6 +13,7 @@ afterEach(async () => { await h.stop() })
 const type = (overrides: Record<string, unknown> = {}) => ({
   id: 'docs', name: 'Docs', description: 'Documentation work.', examples: ['update the README'], not: ['change code'],
   directory: join(h.directory, 'docs'), model: null, directoryMode: 'fixed' as const, instructions: 'Follow the docs style.',
+  readOnly: false,
   ...overrides,
 })
 function seedTypes(types: ReturnType<typeof type>[]): void {
@@ -131,5 +134,42 @@ describe('task types', () => {
     const after = await h.api('GET', 'settings/executor') as unknown as { body: { value: { taskTypes: { id: string }[]; defaultTaskType?: string } } }
     expect(after.body.value.taskTypes.map(item => item.id)).toEqual(['docs'])
     expect(after.body.value).not.toHaveProperty('defaultTaskType')
+  })
+
+  it('defaults every type to writable and snapshots a read-only type for its tickets', async () => {
+    expect(TaskTypeSchema.parse({ id: 'docs', name: 'Docs', description: 'Docs.', directory: join(h.directory, 'docs') }).readOnly).toBe(false)
+    seedTypes([type({ id: 'consult', name: 'Consult', readOnly: true }), type({ id: 'docs', name: 'Docs' })])
+
+    const readonly = await accept(feishu('12', '@bot answer this'), 'consult')
+    const writable = await accept(feishu('13', '@bot write the docs'), 'docs')
+
+    expect(readonly.execution).toMatchObject({ taskType: 'consult', readOnly: true })
+    expect(writable.execution).not.toHaveProperty('readOnly')
+  })
+
+  it('runs a read-only type\'s worker with only the skills and BQA retrieval tools, under the read-only preset, approvals disabled', async () => {
+    seedTypes([type({ id: 'consult', name: 'Consult', readOnly: true })])
+
+    const ticket = await accept(feishu('14', '@bot answer this'), 'consult')
+    const sessionId = `worker-${ticket.id}`
+
+    expect(h.permissionPresets.set).toHaveBeenCalledWith(expect.objectContaining({ id: sessionId }), 'read-only')
+    expect(h.approval.setPolicy).toHaveBeenCalledWith(expect.objectContaining({ id: sessionId }), 'never')
+    // Its Session is created with the read-only agent preset, which has no shell, file, web or delegation tools.
+    const created = h.controller.create.mock.calls.find(([options]) => options.sessionId === sessionId)!
+    expect(created[0]).toMatchObject({ agentPreset: 'dsh-superagent-worker-readonly' })
+    // The allow mask keeps only the tools that preset registers: the skill here; the BQA MCP tools appear after MCP startup.
+    expect(h.restricted.get(sessionId)!.at(-1)!.allow).toEqual(['skill'])
+    // A writable type keeps every profile work tool it has.
+    seedTypes([type({ id: 'work', name: 'Work' })])
+    const writable = await accept(feishu('15', '@bot write the docs'), 'work')
+    expect(h.restricted.get(`worker-${writable.id}`)!.at(-1)!.allow).toEqual(expect.arrayContaining(['write', 'edit']))
+  })
+
+  it('offers a read-only worker only skills and the BQA read-only retrieval tools', () => {
+    expect(workToolsFor(true)).toEqual(['skill', 'mcp__bqa__search_knowledge', 'mcp__bqa__search_code', 'mcp__bqa__read_excerpt'])
+    expect(workToolsFor(true)).not.toContain('write')
+    expect(workToolsFor(true)).not.toContain('pwsh')
+    expect(workToolsFor(false)).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'bash', 'subagent']))
   })
 })

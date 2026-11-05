@@ -1,13 +1,21 @@
 /** BQA source kind: authenticated questions from the BQA service, answered by tickets whose ready report is sent back. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { key, type OutboundMessage, type Trigger } from '../core/index.ts'
+import { key, type OutboundMessage, type RetrievalCall, type TokenUsage, type Trigger } from '../core/index.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks, SourceChannel, SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
 
 export const SOURCE = 'bqa'
 const Label = { zh: 'BQA 业务问答', en: 'BQA questions' } as const
+/** The server name the BQA MCP client mounts under; its tools are named `mcp__bqa__<rawName>`. */
+export const BQA_MCP_SERVER = 'bqa'
+/** The raw names of the three read-only retrieval tools the BQA MCP server exposes. */
+export const BQA_MCP_TOOL_NAMES = ['search_knowledge', 'search_code', 'read_excerpt'] as const
+/** One retrieval tool call relayed to BQA as evidence, with the MCP tool's result object. */
+export interface BqaToolCall { callId: string; toolName: string; result: Record<string, unknown> }
+/** The answer callback's bounds, mirroring BQA's own validation so a malformed evidence list never rejects the whole answer. */
+const BQA_MAX_TOOL_CALLS = 40, BQA_MAX_TOOL_CALL_BYTES = 512 * 1024
 /** Configuration of the BQA Source; the shared secret comes only from `process.env.BQA_SHARED_SECRET`. */
 export const BqaConfigSchema = z.object({
   taskType: z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes, starting with a letter').default('consult'),
@@ -47,16 +55,47 @@ export function bqaTrigger(input: BqaQuestion): Trigger {
 }
 
 /**
- * Sends one answer (or status) to the BQA service's internal callback, authenticated by `x-bqa-secret`. A 4xx is permanent and
- * settles as a gone conversation; a 5xx or a network failure throws so the reply effect retries with backoff.
+ * The token counts BQA records for one delegated run, in the flat snake_case shape its answer callback validates: uncached
+ * input and output, cache reads and writes, and the billed total (both cache kinds included in the prompt side). BQA's own
+ * maintenance summary adds the cache counts to `input_tokens` and keeps `total_tokens`, so both forms agree.
+ */
+export function bqaUsage(usage: TokenUsage): { input_tokens: number; output_tokens: number; total_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } {
+  return { input_tokens: usage.uncachedInputTokens, output_tokens: usage.outputTokens,
+    total_tokens: usage.uncachedInputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+    cache_read_input_tokens: usage.cacheReadTokens, cache_creation_input_tokens: usage.cacheWriteTokens }
+}
+
+/**
+ * Select the retrieval calls BQA records as evidence of one answer: only its three read-only retrieval tools, only when the
+ * result object carries the identity BQA validates (`retrieval_id` and `corpus_release_id`), capped at 40 calls and 512 KiB
+ * of JSON so BQA accepts the whole answer callback. Anything else is dropped instead of failing the answer.
+ */
+export function bqaToolCalls(calls: readonly RetrievalCall[]): BqaToolCall[] {
+  const prefix = `mcp__${BQA_MCP_SERVER}__`
+  const selected: BqaToolCall[] = []
+  for (const call of calls) {
+    if (selected.length >= BQA_MAX_TOOL_CALLS) break
+    if (!call.toolName.startsWith(prefix) || !(BQA_MCP_TOOL_NAMES as readonly string[]).includes(call.toolName.slice(prefix.length))) continue
+    if (typeof call.result.retrieval_id !== 'string' || typeof call.result.corpus_release_id !== 'string') continue
+    selected.push({ callId: call.callId, toolName: call.toolName, result: call.result })
+  }
+  while (selected.length && JSON.stringify(selected).length > BQA_MAX_TOOL_CALL_BYTES) selected.pop()
+  return selected
+}
+
+/**
+ * Sends one answer (or status) to the BQA service's internal callback, authenticated by `x-bqa-secret`, with the worker's token
+ * usage and its read-only retrieval evidence when the report carries them. A 4xx is permanent and settles as a gone
+ * conversation; a 5xx or a network failure throws so the reply effect retries with backoff.
  */
 export async function sendBqa(_host: Pick<SourceContext, 'commands'>, message: OutboundMessage, config: BqaConfig): Promise<'sent' | 'gone'> {
   const secret = process.env.BQA_SHARED_SECRET
   if (!secret) throw new Error('BQA_SHARED_SECRET is not set, so BQA answers cannot be delivered')
   const address = message.channel.address
+  const toolCalls = message.retrievalCalls ? bqaToolCalls(message.retrievalCalls) : []
   const body = { messageId: message.id, requestId: address.requestId ?? '', ticketId: message.ticketId ?? '',
     conversationId: address.conversationId ?? '', userId: address.userId ?? '', status: address.status ?? 'ready', text: message.text,
-    at: new Date().toISOString() }
+    at: new Date().toISOString(), ...(message.usage ? { usage: bqaUsage(message.usage) } : {}), ...(toolCalls.length ? { toolCalls } : {}) }
   let response: Response
   try {
     response = await fetch(`${config.bqaBaseUrl.replace(/\/+$/, '')}/api/internal/superagent/answers`, { method: 'POST',

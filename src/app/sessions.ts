@@ -8,6 +8,7 @@ import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type EngineName, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { BQA_MCP_SERVER, BQA_MCP_TOOL_NAMES } from '../sources/bqa.ts'
 import { attachClaudeCode } from '../executor/claude-code.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
@@ -46,7 +47,7 @@ export interface SessionsHost {
 interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
-export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+export const WORKER_PRESET = 'dsh-superagent-worker', READONLY_WORKER_PRESET = 'dsh-superagent-worker-readonly', ROUTER_PRESET = 'dsh-superagent-router'
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** DSH's agent preset registry selected `agentPreset` for a Session. */
@@ -61,8 +62,19 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+/** The work tools a read-only ticket's Executor Session is offered: only the skills and the BQA read-only MCP retrieval tools. */
+const READ_ONLY_WORK_TOOLS = ['skill', ...BQA_MCP_TOOL_NAMES.map(name => `mcp__${BQA_MCP_SERVER}__${name}`)]
+/** The work tools an Executor Session is offered; a read-only ticket's Session gets only its retrieval surface. */
+export const workToolsFor = (readOnly: boolean): readonly string[] => readOnly ? READ_ONLY_WORK_TOOLS : WORK_TOOLS
+/** The deployment permission preset a read-only ticket's worker runs under: the read-only file sandbox, paired with its own approvals policy below. */
+export const READ_ONLY_PRESET = 'read-only'
 /** The shell tool DSH registers on this platform: Windows registers `pwsh`, other platforms `bash`; `tools.restrict` refuses a name no tool registers. */
 const SHELL_TOOL = process.platform === 'win32' ? 'pwsh' : 'bash'
+/** The approval service seam as `Sessions` uses it: disable interactive approvals on an unattended read-only worker. */
+type ApprovalSeam = { setPolicy?: (agent: Agent, policy: 'never') => void }
+/** Whether a ticket's task type runs its worker read-only; the flag is snapshotted onto the ticket at accept time. */
+const readOnlyOfTicket = (ticket: Ticket | undefined): boolean => ticket?.execution?.readOnly === true
+
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -127,7 +139,8 @@ export class Sessions {
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
         const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
+        const ticket = ticketId ? this.host.store.tickets.get(ticketId) : undefined
+        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticket ? this.presetOf(ticket) : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
         presets.select(agent, ours).catch(() => {})
@@ -137,16 +150,19 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
+  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets the permission preset and agent preset of a new Session (read-only for a read-only ticket's worker), and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
+    const readOnly = role === 'worker' && this.readOnlyOf(this.ticketOfId(id))
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
+    let created = false
     if ('error' in result && result.error.code === 'session/not-found') {
       const workspace = await ctx.workspaceRegistry.create(cwd)
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
       await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
-        agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
+        agentPreset: role === 'worker' ? readOnly ? READONLY_WORKER_PRESET : WORKER_PRESET : ROUTER_PRESET })
       result = await ctx.sessionController.resolveAgent(id as SessionId)
+      created = true
     }
     if ('error' in result) throw result.error
     // DSH's Web UI lists only Sessions accounted to a Workspace. A Session created by an earlier
@@ -161,9 +177,30 @@ export class Sessions {
     // A native Claude Code worker runs its own loop; seeding a DSH model would only add an unused selection.
     if (engine !== 'claude-code') await initializeRoleModel(ctx, result.agent, model)
     await this.decorate(result.agent)
-    ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
+    // Permission overrides are durable in the Session log, so only a new Session needs them; a resumed one replays its own.
+    if (created) this.applyPermission(result.agent, readOnly)
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
+  }
+  /**
+   * Apply the permissions of a newly created Session: a read-only ticket's worker gets DSH's read-only file sandbox preset,
+   * whose approvals are then disabled so an unattended worker fails closed instead of waiting for a person; every other
+   * Session keeps full file access. A deployment that defines no read-only preset cannot run a read-only task type, which
+   * fails the launch with an error rather than silently running the worker writable.
+   */
+  private applyPermission(agent: Agent, readOnly: boolean): void {
+    const presets = this.ctx.permissionPresets
+    if (!readOnly) { presets.set(agent.session, 'danger-full-access'); return }
+    if (presets.names?.length && !presets.names.includes(READ_ONLY_PRESET)) {
+      throw new Error(`This deployment defines no ${READ_ONLY_PRESET} permission preset, so a read-only task type cannot run`)
+    }
+    try { presets.set(agent.session, READ_ONLY_PRESET) } catch (error) {
+      throw new Error(`A read-only task type needs the ${READ_ONLY_PRESET} permission preset: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const approval = this.ctx.get('approval') as ApprovalSeam | undefined
+    try { approval?.setPolicy?.(agent, 'never') } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not disable approvals for read-only Session %s: %s', agent.id, String(error))
+    }
   }
   /** Account `agent` to the Workspace of its cwd, which the Web UI needs to list and open it; a failure is logged, not fatal. */
   private async attachWorkspace(agent: Agent): Promise<void> {
@@ -328,16 +365,38 @@ export class Sessions {
    * ended. A failed or blocked worker keeps its tools, so a person may continue it in its Session; only automated input waits
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
+   * A read-only Session's BQA MCP tools appear only after the MCP client's asynchronous startup, so its allow mask is
+   * recomputed whenever the tool set changes; a mask that named them before they existed would keep hiding them.
    */
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    const readOnly = this.readOnlyOf(store.tickets.get(ticketId))
+    const guard = agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
-    })]
+    })
+    if (!readOnly) return [agent.ctx.tools.restrict({ allow: WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)) }), guard]
+    let mask: (() => void) | undefined
+    let refreshing = false
+    const refresh = () => {
+      if (refreshing) return
+      refreshing = true
+      try {
+        try { mask?.() } catch { /* Releasing an earlier mask cannot fail in a way the next one depends on. */ }
+        mask = agent.ctx.tools.restrict({ allow: READ_ONLY_WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)) })
+      } catch (error) {
+        mask = undefined
+        this.ctx.logger.warn('dsh-superagent could not restrict a read-only Session to its retrieval tools: %s', String(error))
+      } finally { refreshing = false }
+    }
+    refresh()
+    return [() => { try { mask?.() } catch { /* Already released with the agent. */ } }, guard, agent.ctx.on('tools/change', refresh)]
   }
+  /** Whether a ticket's task type runs its worker read-only; the flag is snapshotted onto the ticket at accept time. */
+  private readOnlyOf(ticket: Ticket | undefined): boolean { return readOnlyOfTicket(ticket) }
+  /** The agent preset a ticket's worker Session runs under: the read-only preset for a read-only task type, else the worker preset. */
+  private presetOf(ticket: Ticket): string { return this.readOnlyOf(ticket) ? READONLY_WORKER_PRESET : WORKER_PRESET }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's
    * permissions, gets the same work tools as the worker, and none once the worker's ticket ended. Any other agent is left as

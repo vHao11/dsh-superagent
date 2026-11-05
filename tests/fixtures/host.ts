@@ -161,9 +161,19 @@ export async function startRuntime(seed?: (store: Store) => void) {
     return { done, collected: { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') } }
   }) }
   const agents = new Map<string, FakeAgent>()
+  /** Each Session's durable event log, which the Executor replays for usage and retrieval evidence. */
+  const sessionEvents = new Map<string, { type: string; data?: unknown }[]>()
   /** Each Session's next step, which takes the messages that wait for one. */
   const steps = new Map<string, () => void>(), claims = new Map<string, () => void>()
   const tools = new Map<string, Map<string, RegisteredTool>>()
+  /** Each Session's `tools.restrict` calls, and what the profile's preset registers as known work tools. */
+  const restricted = new Map<string, { allow: string[] }[]>()
+  const presetTools = [process.platform === 'win32' ? 'pwsh' : 'bash', 'read', 'write', 'edit', 'read_image', 'glob', 'grep',
+    'job_output', 'job_list', 'job_kill', 'web_search', 'skill']
+  /** Permission and projection seams a test can assert or configure; a real deployment provides them from DSH. */
+  const permissionPresets = { set: vi.fn((_session: unknown, _preset: string): void => {}), names: ['read-only', 'workspace-write', 'danger-full-access'] }
+  const approval = { setPolicy: vi.fn((_agent: unknown, _policy: string): void => {}) }
+  const sessionProjections = { stateOf: vi.fn((_session: unknown, _key: string): unknown => undefined) }
   const deliveries = vi.fn<(request: Delivery) => void>()
   let http!: HttpHandler
   const resolveDefault = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
@@ -174,7 +184,9 @@ export async function startRuntime(seed?: (store: Store) => void) {
       const sessionTools = new Map<string, RegisteredTool>()
       tools.set(sessionId, sessionTools)
       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
-      agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
+      agentCtx.reflect.provide('tools', { register, get: (name: string) => presetTools.includes(name) ? { name } : undefined,
+        restrict: (rule: { allow: string[] }) => { restricted.set(sessionId, [...restricted.get(sessionId) ?? [], rule]); return () => {} },
+        guard: vi.fn(() => () => {}) })
       agentCtx.reflect.provide('skills', { register: () => () => {} })
       agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
@@ -210,7 +222,8 @@ export async function startRuntime(seed?: (store: Store) => void) {
         turn++
         take(true)
       })
-      const session = { id: sessionId, snapshotEvents: () => [], requestHeader: () => undefined, append: vi.fn() }
+      const session = { id: sessionId, snapshotEvents: () => sessionEvents.get(sessionId) ?? [], requestHeader: () => undefined, append: vi.fn() }
+      sessionEvents.set(sessionId, [])
       let status = 'idle'
       const idle: (() => void)[] = []
       // A cancel drops the inbox unless kept, and the turn it stops ends a moment later, which DSH says.
@@ -241,8 +254,8 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const jobs = jobRegistry(id => agents.get(id))
   const subagents = subagentRuntime(agents)
   const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value) }, sessionController: controller,
-    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
-    jobs: jobs.service, subagents: subagents.service }
+    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets, approval,
+    sessionProjections, subprocess, webServer, jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
@@ -298,6 +311,6 @@ export async function startRuntime(seed?: (store: Store) => void) {
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
   return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim }
+    jobs, subagents, step, claim, permissionPresets, approval, sessionProjections, restricted, sessionEvents }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

@@ -4,13 +4,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Decision, Ticket, WorkerReport } from '../src/core/index.ts'
+import type { Decision, RetrievalCall, Ticket, TokenUsage, WorkerReport } from '../src/core/index.ts'
 import type { Store } from '../src/app/store.ts'
 import { Store as StoreClass } from '../src/app/store.ts'
 import { registerBqaHttp, type BqaHttpHost } from '../src/app/bqa-http.ts'
 import { bqaDirectReply } from '../src/app/bqa-reply.ts'
 import { KV } from '../src/kv.ts'
-import { BqaConfigSchema, BqaQuestionSchema, bqaTrigger, sendBqa } from '../src/sources/bqa.ts'
+import { BqaConfigSchema, BqaQuestionSchema, bqaToolCalls, bqaTrigger, bqaUsage, sendBqa } from '../src/sources/bqa.ts'
 
 const SECRET = 'test-secret'
 let directory: string
@@ -92,9 +92,31 @@ describe('inbound routes', () => {
 })
 
 describe('answers', () => {
+  const USAGE: TokenUsage = { uncachedInputTokens: 120, outputTokens: 80, cacheReadTokens: 5, cacheWriteTokens: 7 }
+  const CALLS: RetrievalCall[] = [
+    { callId: 'call-1', toolName: 'mcp__bqa__search_knowledge', result: { retrieval_id: 'retrieval-1', corpus_release_id: 'release-1', sources: [] } },
+    { callId: 'call-2', toolName: 'mcp__bqa__read_excerpt', result: { retrieval_id: 'retrieval-2', corpus_release_id: 'release-1' } },
+    { callId: 'call-3', toolName: 'orchestrator_read', result: { ticket_id: 'ticket-1' } },
+    { callId: 'call-4', toolName: 'mcp__bqa__search_code', result: { sources: [] } },
+  ]
   const message = (id: string) => ({ id, kind: 'reply' as const, ticketId: 'ticket-1',
     channel: { source: 'bqa', thread: 'bqa:conv-1', address: { conversationId: 'conv-1', requestId: 'req-1', userId: 'user-1', status: 'ready' } },
     text: 'The answer' })
+  it('relays only the three BQA read-only retrieval tools whose result carries the evidence identity BQA validates', () => {
+    expect(bqaToolCalls(CALLS)).toEqual([CALLS[0], CALLS[1]])
+  })
+  it('maps the worker Session token counts to the flat fields BQA validates, billed total included', () => {
+    expect(bqaUsage(USAGE)).toEqual({ input_tokens: 120, output_tokens: 80, total_tokens: 212,
+      cache_read_input_tokens: 5, cache_creation_input_tokens: 7 })
+  })
+  it('posts the worker Session token counts and retrieval evidence with the answer', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ accepted: true }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await sendBqa({ commands: {} as never }, { ...message('m-usage'), usage: USAGE, retrievalCalls: CALLS }, BqaConfigSchema.parse({}))).toBe('sent')
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toMatchObject({ messageId: 'm-usage', usage: { input_tokens: 120, output_tokens: 80,
+      total_tokens: 212, cache_read_input_tokens: 5, cache_creation_input_tokens: 7 }, toolCalls: [CALLS[0], CALLS[1]] })
+  })
   it('posts the answer to the BQA callback with the shared secret, and treats 4xx as gone', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ accepted: true }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -123,6 +145,23 @@ describe('answers', () => {
     instance = { enabled: true, config: BqaConfigSchema.parse({ directReply: false }) }
     bqaDirectReply(host, ticket, report('ready', 'The answer'))
     expect(outbox.send).toHaveBeenCalledTimes(2)
+  })
+  it('forwards the report\'s token counts to the answer reply, for statuses too', () => {
+    const ticket = { id: 'ticket-1', channels: [{ source: 'bqa', thread: 'bqa:conv-1', address: { conversationId: 'conv-1', requestId: 'req-1', userId: 'user-1' } }] } as unknown as Ticket
+    const outbox = { send: vi.fn() }
+    const host = { outbox, sources: { instance: <C>() => instance as unknown as { enabled: boolean; config: C; id: string; kind: string } } }
+    const at = '2026-11-05T00:00:00.000Z'
+    bqaDirectReply(host, ticket, { state: 'ready', summary: 'The answer', at, usage: USAGE })
+    expect(outbox.send).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'The answer', usage: USAGE,
+      channel: expect.objectContaining({ address: expect.objectContaining({ status: 'ready' }) }) }))
+    bqaDirectReply(host, ticket, { state: 'blocked', summary: 'Need a person', at: '2026-11-05T00:00:01.000Z', usage: USAGE })
+    expect(outbox.send).toHaveBeenLastCalledWith(expect.objectContaining({ text: '', usage: USAGE,
+      channel: expect.objectContaining({ address: expect.objectContaining({ status: 'blocked' }) }) }))
+    bqaDirectReply(host, ticket, { state: 'ready', summary: 'No meter', at: '2026-11-05T00:00:02.000Z' })
+    expect(outbox.send).toHaveBeenLastCalledWith(expect.not.objectContaining({ usage: expect.anything() }))
+    // The retrieval evidence travels with the report, for the channel to filter and validate.
+    bqaDirectReply(host, ticket, { state: 'ready', summary: 'With evidence', at: '2026-11-05T00:00:03.000Z', usage: USAGE, retrievalCalls: CALLS })
+    expect(outbox.send).toHaveBeenLastCalledWith(expect.objectContaining({ usage: USAGE, retrievalCalls: CALLS }))
   })
 })
 

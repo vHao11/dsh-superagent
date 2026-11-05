@@ -47,13 +47,19 @@ if (-not (Test-Path -LiteralPath $RefreshScript -PathType Leaf)) {
 }
 $refresh = (Resolve-Path -LiteralPath $RefreshScript).Path
 # A hidden launcher: wscript starts PowerShell with no window and returns at once, so a long export never shows a console.
-$wrapper = Join-Path ([System.IO.Path]::GetTempPath()) 'dsh-ume-refresh.vbs'
+# It lives in a per-user stable directory rather than the temp directory a cleanup may empty, which would leave the task silently failing.
+$wrapperDirectory = Join-Path $env:LOCALAPPDATA 'dsh-superagent'
+New-Item -ItemType Directory -Force -Path $wrapperDirectory | Out-Null
+$wrapper = Join-Path $wrapperDirectory 'dsh-ume-refresh.vbs'
 $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$refresh`" -NoPause"
-$vbs = "CreateObject(""WScript.Shell"").Run ""$($command.Replace('"', '""'))"", 0, False"
+# WScript takes one string literal: every quote inside the command becomes a doubled quote, so the wrapper's own delimiters stay intact.
+$vbs = 'CreateObject("WScript.Shell").Run "' + $command.Replace('"', '""') + '", 0, False'
 [System.IO.File]::WriteAllText($wrapper, $vbs, (New-Object System.Text.UTF8Encoding($false)))
 
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument "//B //Nologo `"$wrapper`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
+# `$Action` is this script's parameter and validates its own set, so the task action needs another name.
+$taskAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument "//B //Nologo `"$wrapper`""
+# Windows rejects a TimeSpan.MaxValue repetition duration (P99999999D), so the task repeats for ten years instead.
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::FromDays(3650))
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Refreshes the UME message-capture export for the dsh-superagent ume Source' -Force | Out-Null
-Write-Output "Registered scheduled task $TaskName every $IntervalMinutes minute(s): $refresh"
+Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger -Settings $settings -Description 'Refreshes the UME message-capture export for the dsh-superagent ume Source' -Force | Out-Null
+Write-Output "Registered scheduled task $TaskName every $IntervalMinutes minute(s): $refresh (wrapper $wrapper)"
