@@ -78,11 +78,16 @@ if ($DryRun) { Write-Note 'DRY RUN: nothing will be written' }
 
 # --- 0. toolchain -----------------------------------------------------------
 $node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) { throw 'node is not on PATH; install Node.js 22.19+ or 24+.' }
+if (-not $node) { throw 'node is not on PATH; install Node.js 22 or 24+.' }
 $nodeVersion = (& node -v).TrimStart('v')
-$nodeMajor = [int] ($nodeVersion -split '\.')[0]
-if ($nodeMajor -lt 22) { throw "Node.js $nodeVersion is too old; this package needs 22.19+ or 24+." }
+$nodeParts = $nodeVersion -split '\.'
+$nodeMajor = [int] $nodeParts[0]
+$nodeMinor = if ($nodeParts.Count -gt 1) { [int] $nodeParts[1] } else { 0 }
+if ($nodeMajor -lt 22) { throw "Node.js $nodeVersion is too old; this package needs Node.js 22 or 24+." }
 Write-Sub "node $nodeVersion"
+if ($nodeMajor -eq 22 -and $nodeMinor -lt 19) {
+    Write-Note "node $nodeVersion is below the package engines range (^22.19.0); continuing anyway"
+}
 
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $profilesDir = Join-Path $dshHome 'profiles'
@@ -199,7 +204,16 @@ foreach ($dir in $candidates) {
     } else {
         $obj.dependencies | Add-Member -MemberType NoteProperty -Name 'dsh-superagent' -Value $linkValue -Force
     }
-    ($obj | ConvertTo-Json -Depth 32) | Set-Content -Path $pkgPath -Encoding UTF8
+    # DSH parses profile package.json with JSON.parse, which rejects a BOM; write
+    # UTF-8 without one (Set-Content -Encoding UTF8 adds a BOM on Windows PowerShell 5.1).
+    $newJson = ($obj | ConvertTo-Json -Depth 32) + "`n"
+    [System.IO.File]::WriteAllText($pkgPath, $newJson, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $null = (Get-Content $pkgPath -Raw) | ConvertFrom-Json
+    } catch {
+        Copy-Item $backup $pkgPath -Force
+        throw "Rewritten package.json did not parse; restored the backup: $backup"
+    }
     Write-Ok "package.json updated (backup: $(Split-Path -Leaf $backup))"
 
     Write-Sub 're-linking profile node_modules ...'
