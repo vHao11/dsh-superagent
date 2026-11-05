@@ -357,6 +357,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
   } },
+  'POST tasks': { body: true, answer: ({ body }) => ({ decisionId: 'd1', ticketId: 't1', ticket: ticketSummary(),
+    ...(body.requestId ? { requestId: body.requestId } : {}) }) },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
     server.revisions.pause = (server.revisions.pause ?? 0) + 1

@@ -24,6 +24,8 @@ export interface Policy {
   admitsInferred(rules: readonly string[]): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
+  /** How long the newest queued Trigger of `source` waits before its Thread's Eval starts, merging a burst into one candidate; absent means no wait. */
+  mergeWindowMs?(source: string): number
 }
 
 /** What the assessor receives: bounded facts, never authority. */

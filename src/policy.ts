@@ -5,7 +5,7 @@
 import { LIMITS } from './limits.ts'
 import { isAbsolute, win32 } from 'node:path'
 import { z } from 'zod'
-import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
+import { ADMISSION_DEFAULTS, ADMISSION_OPTIONS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
 import { ENGINE_NAMES, key, isOperatorTrigger, OPERATOR_SOURCE, UserError, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
@@ -101,7 +101,8 @@ export const TaskTypeSchema = z.object({
 export type TaskType = z.infer<typeof TaskTypeSchema>
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict()
 const Weak = z.enum(['inferred', 'ignore'])
-export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
+export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: z.enum(ADMISSION_OPTIONS.listedUnaddressed).optional(),
+  unlistedAddressed: z.enum(ADMISSION_OPTIONS.unlistedAddressed).optional(), unlistedUnaddressed: Weak.optional() }).strict()
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
@@ -109,11 +110,23 @@ export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default({}),
 }).strict()
+/** Per-Source candidate delivery batching; missing fields take the defaults below, and a missing Source entry keeps immediate delivery. */
+export const EvalBatchSchema = z.object({
+  windowSeconds: z.number().int().min(0).max(3600).default(0),
+  maxBatch: z.number().int().min(1).max(20).default(20),
+  maxPerMinute: z.number().int().min(1).max(600).default(60),
+  mergeWindowSeconds: z.number().int().min(0).max(300).default(0),
+}).strict()
+export type EvalBatch = z.infer<typeof EvalBatchSchema>
 export const EvalConfigSchema = z.object({
   mode: z.enum(['off', 'observe', 'auto']).default('observe'),
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   model: RoleModelSchema.nullable().default(null),
+  /** Candidate delivery batching by Source ID; absent = every candidate is delivered immediately (the pre-batching behavior). */
+  batches: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), EvalBatchSchema).default({}),
 }).strict()
+/** The batch settings of `source`, or undefined when it delivers each candidate immediately. */
+export const evalBatch = (settings: Pick<Settings, 'eval'>, source: string): EvalBatch | undefined => settings.eval.batches[source]
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
 /** Claude Code permission modes, as the CLI names them: `default` is Manual, `acceptEdits` is Edit automatically. */
@@ -294,6 +307,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   }
   return {
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
+    mergeWindowMs: source => (settings.eval.batches[source]?.mergeWindowSeconds ?? 0) * 1000,
     gate(trigger: Trigger, thread, tickets) {
       // The operator writes in the main Session, whose tool alone creates this Trigger; no Source list or scope applies.
       if (isOperatorTrigger(trigger)) return { admissible: true, strength: 'explicit',

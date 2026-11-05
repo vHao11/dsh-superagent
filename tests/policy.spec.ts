@@ -254,7 +254,7 @@ describe('settings migration', () => {
       paused: true,
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
-      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
+      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' }, batches: {} },
       executor: { engine: 'dsh', model: null, maxWorkers: 5, directory: '', directoryMode: 'per-ticket', prepare: '', blockedCommands: [],
         claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
         taskTypes: [] },
@@ -306,14 +306,13 @@ describe('assessment outcomes', () => {
 })
 
 describe('admission table settings', () => {
-  it('refuses an explicit cell for messages that do not address the agent, in the settings and in a submitted Policy', () => {
-    for (const cell of ['listedUnaddressed', 'unlistedUnaddressed']) {
-      const part = { allowed: [], admission: { [CHAT]: { [cell]: 'explicit' } } }
-      expect(() => SettingsSchema.parse({ policy: { sources: { feishu: part } } })).toThrow()
-      expect(() => sources.validatePolicy({ feishu: part })).toThrow()
-    }
-    expect(sources.validatePolicy({ feishu: { allowed: [], admission: { [CHAT]: { unlistedAddressed: 'explicit' } } } }).feishu)
-      .toMatchObject({ admission: { [CHAT]: { unlistedAddressed: 'explicit' } } })
+  it('allows an explicit cell for a listed sender who never addresses the agent, as the UME Source needs, but not for unlisted ones', () => {
+    const listed = { allowed: [{ id: MEMBER }], admission: { [CHAT]: { listedUnaddressed: 'explicit' } } }
+    expect(SettingsSchema.parse({ policy: { sources: { feishu: listed } } }).policy.sources.feishu!.admission[CHAT]!.listedUnaddressed).toBe('explicit')
+    expect(sources.validatePolicy({ feishu: listed }).feishu).toMatchObject({ admission: { [CHAT]: { listedUnaddressed: 'explicit' } } })
+    const unlisted = { allowed: [], admission: { [CHAT]: { unlistedUnaddressed: 'explicit' } } }
+    expect(() => SettingsSchema.parse({ policy: { sources: { feishu: unlisted } } })).toThrow()
+    expect(() => sources.validatePolicy({ feishu: unlisted })).toThrow()
   })
   it('accepts an explicit candidate whatever the accept mode, which bears only on inferred ones', () => {
     const rules = SettingsSchema.parse({}).policy.rules.filter(rule => rule.enabled)

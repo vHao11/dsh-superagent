@@ -3,6 +3,7 @@ import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
 import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
+import type { WorkerReport } from './assignments.ts'
 
 export interface EngineOptions {
   repo: Repositories
@@ -13,6 +14,8 @@ export interface EngineOptions {
   executor: Executor
   outbox: Outbox
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
+  /** Called inside the report's transaction with the recorded report, after the ticket and its assignment were saved. */
+  onReport?: (ticket: Ticket, report: WorkerReport & { at: string }) => void
   now?: () => string
   emit?: (event: DomainEvent) => void
 }

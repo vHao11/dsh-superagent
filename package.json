@@ -17,6 +17,8 @@
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./schedule-watch": "./lib/schedule-watch.js",
+    "./ume-watch": "./lib/ume-watch.js",
+    "./bqa-watch": "./lib/bqa-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },

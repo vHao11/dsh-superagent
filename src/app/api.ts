@@ -16,6 +16,8 @@ export type ThreadFilter = typeof THREAD_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
+/** One ticket row as the ticket list returns it; the created task's ticket is echoed in the same shape. */
+export type TicketRow = TicketListView['items'][number]
 
 export interface Api {
   'GET state': { response: StateView }
@@ -35,6 +37,8 @@ export interface Api {
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
+  'POST tasks': { body: { title: string; request: string; taskType?: string; engine?: 'dsh' | 'claude-code'; name?: string; requestId?: string }
+    response: { decisionId: string; ticketId: string; ticket: TicketRow; requestId?: string } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }

@@ -19,6 +19,11 @@ export interface OperatorTask {
   taskType?: string
   /** The short English worktree name the accept carries. */
   name?: string
+  /**
+   * An idempotency key, such as a dispatcher's request id: a task retried with the same key reaches the Decision the first
+   * attempt recorded instead of starting another ticket (see `Engine.startTask`).
+   */
+  idempotencyKey?: string
 }
 
 /** Whether a Trigger is the operator's own, which only this plugin's main-Session tools create. */

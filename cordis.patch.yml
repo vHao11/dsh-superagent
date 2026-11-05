@@ -9,6 +9,14 @@
     # Schedule Source: interval tasks configured on its card; each task can be set to feed superagent or not.
     - id: dsh-superagent-schedule
       name: dsh-superagent/schedule-watch
+    # UME Source: reads UME message-capture's exported data/tasks.json; disabled until the export path and colleague list are configured.
+    - id: dsh-superagent-ume
+      name: dsh-superagent/ume-watch
+      disabled: true
+    # BQA Source: questions pushed by the BQA service and answered directly; disabled until BQA_SHARED_SECRET and its task type are configured.
+    - id: dsh-superagent-bqa
+      name: dsh-superagent/bqa-watch
+      disabled: true
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

@@ -13,6 +13,7 @@ import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
+import type { Batches } from './batches.ts'
 import type { Effects } from './effects.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
@@ -54,6 +55,8 @@ export interface AssessorHost {
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
+  /** Queue that batches a Source's candidates into one delivery according to its settings. */
+  readonly batches: Pick<Batches, 'request'>
   settings(): Settings
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
@@ -101,8 +104,8 @@ export class MasterAssessor implements Assessor {
       this.host.engine.candidateDelivered(evalId)
     }, { limit: () => host.paused() ? 0 : 4 })
   }
-  /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
-  request(candidate: Candidate): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }) }
+  /** Queues `candidate` for delivery, as a single candidate or inside its Source's batch, according to settings. */
+  request(candidate: Candidate): void { this.host.batches.request(candidate) }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
   /** Drop an Eval's context and reads once it finishes; any running load for it discards its result. */
