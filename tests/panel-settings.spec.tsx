@@ -78,7 +78,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await type(provider as HTMLSelectElement, 'deepseek-account')
   expect((model as HTMLSelectElement).value).toBe('deepseek-flash')
   await click(zh.save)
-  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'deepseek-account', model: 'deepseek-flash' } })
+  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'deepseek-account', model: 'deepseek-flash' }, batches: {} })
   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
   await type(field<HTMLInputElement>(zh.maxWorkers), '5')
   // An empty root uses the default directory, which the field names instead of looking set.

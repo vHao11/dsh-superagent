@@ -23,6 +23,7 @@ import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
+import { Batches } from './batches.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
 import { evalsHealth } from './views/overview.ts'
@@ -30,6 +31,8 @@ import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
 import { registerHttp, type HttpHost } from './http.ts'
+import { registerBqaHttp } from './bqa-http.ts'
+import { bqaDirectReply } from './bqa-reply.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { eventNotice, followupNotice } from './notices.ts'
@@ -89,6 +92,7 @@ export class Runtime extends Service implements SourceHost {
   readonly settings: Settings
   readonly executor: DshExecutor
   readonly assessor: MasterAssessor
+  readonly batches: Batches
   readonly outbox: Outbox
   readonly engine: Engine
   readonly passes: Passes
@@ -150,14 +154,17 @@ export class Runtime extends Service implements SourceHost {
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
+      const batches = this.batches = new Batches({ store, effects, get engine() { return runtime.engine }, settings: () => store.settings(),
+        paused: () => this.paused(), candidateCard: candidate => candidateCard(links, candidate),
+        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer') })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
-        settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+        batches, settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
-        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
+        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), onReport: (ticket, report) => bqaDirectReply({ outbox, sources }, ticket, report), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)
@@ -221,8 +228,12 @@ export class Runtime extends Service implements SourceHost {
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
   private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
   private async initialize(): Promise<void> {
-    // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
+    // Register management HTTP routes before setup completes so operators can fix setup problems in the UI, and the BQA
+    // inbound routes beside them so a pushing service never finds them missing after a restart.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
+    const runtime = this
+    this.disposers.push(registerBqaHttp(this.ctx, { store: this.store, sources: this.sources, get engine() { return runtime.engine },
+      get ready() { return runtime.ready }, requestPass: () => { this.passes.request() } }))
     if (!await this.setup.run(this.store.settings())) {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
@@ -235,6 +246,8 @@ export class Runtime extends Service implements SourceHost {
     if (this.closing()) return
     this.executor.resume()
     this.passes.start()
+    // Requeue the candidates that were waiting in a Source's batch window when the host stopped, then start delivering.
+    this.batches.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }

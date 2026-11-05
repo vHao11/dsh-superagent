@@ -11,6 +11,8 @@ import type { Store } from './store.ts'
 export interface EffectPayloads {
   /** Build an Eval's candidate card and relay it to the main Session; the key is the Eval ID. */
   assessment: { triggerId: string }
+  /** Deliver one Source's waiting candidates as a single batch message; the key is the Source ID. */
+  'assessment-batch': { source: string }
   /** Launch a pending Assignment; the key is the Assignment ID. */
   launch: { ticketId: string; assignmentId: string }
   /** Hand a ticket's waiting Inputs to its running Assignment; the key is the Ticket ID. */
@@ -57,11 +59,15 @@ export class Effects {
   constructor(private readonly store: Store, private readonly board: Pick<HealthBoard, 'claim'>, private readonly now = () => Date.now()) {
     this.seq = Number(store.db.prepare('SELECT IFNULL(MAX(seq), 0) AS seq FROM effect').get()?.seq ?? 0)
   }
-  /** Upserts an effect in the caller's transaction, coalescing with any waiting row of the same kind and key while keeping its queue position. */
-  enqueue<K extends EffectKind>(kind: K, key: string, payload: EffectPayloads[K]): void {
+  /**
+   * Upserts an effect in the caller's transaction, coalescing with any waiting row of the same kind and key while keeping its
+   * queue position. `due` schedules the effect for a later time; omitting it makes it due now.
+   */
+  enqueue<K extends EffectKind>(kind: K, key: string, payload: EffectPayloads[K], due?: number): void {
+    const now = this.now()
     this.store.db.prepare(`INSERT INTO effect (kind, key, value, seq, due, since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE
       SET value = excluded.value, generation = generation + 1, attempts = 0, error = '', due = excluded.due`)
-      .run(kind, key, JSON.stringify(payload), ++this.seq, this.now(), new Date(this.now()).toISOString())
+      .run(kind, key, JSON.stringify(payload), ++this.seq, due ?? now, new Date(now).toISOString())
     this.kick()
   }
   handle<K extends EffectKind>(kind: K, run: Handler<K>['run'], options: Options<K> = {}): void {

@@ -2,8 +2,8 @@
 import { UserError } from './errors.ts'
 import { key } from './ids.ts'
 import { isoTime, liveTicket } from './model.ts'
-import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
-import type { Candidate, Repositories } from './ports.ts'
+import type { ChannelRef, Decision, PolicyEffect, Thread, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { Candidate, Policy, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
 import { Evals, type Outcome } from './evals.ts'
@@ -49,6 +49,24 @@ export class Engine {
    */
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
   /**
+   * A Source's self-authenticated explicit request: store its Trigger and, when `accept` is given, create the ticket directly
+   * as the Source decides it, without an Eval or the Policy gate. The Source's own authentication vouches for the sender; the
+   * BQA Source is the only caller. A repeated Trigger returns the Decision recorded the first time.
+   */
+  acceptSourceTrigger(trigger: Trigger, accept: { title: string; scope: string; taskType?: string }): { result: ReceiveResult; decision?: Decision } {
+    return this.repo.atomic(() => {
+      const result = this.intake.receive(trigger)
+      if (result === 'duplicate') {
+        const decisionId = this.repo.triggers.disposition(trigger.id)?.decisionId
+        const decision = decisionId ? this.repo.decisions.get(decisionId) : undefined
+        return { result, ...decision ? { decision } : {} }
+      }
+      const decision = this.evals.acceptDirect(trigger.id, { kind: 'accept', title: accept.title, scope: accept.scope,
+        reason: { code: 'sourceAccepted' }, ...accept.taskType ? { taskType: accept.taskType, taskTypeSource: 'source' as const } : {} })
+      return { result, decision }
+    })
+  }
+  /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
    * opened it: the ticket subscribes to it, and a ready report ends it only once `followsDone` holds (see `Tickets.followsDone`).
    * @throws UserError when the ticket is unknown or has ended.
@@ -82,8 +100,21 @@ export class Engine {
       if (!liveTicket(ticket) && ticket.undelivered.length) this.repo.atomic(() => { this.tickets.wake(ticket.id) })
     }
     for (const thread of this.repo.threads.active()) {
-      if (thread.pending.length && !thread.evaluating) this.repo.atomic(() => { this.evals.start(thread.key, policy) })
+      // A Source may merge a burst of messages on one Thread into one Eval by waiting after the newest one arrived.
+      if (thread.pending.length && !thread.evaluating && !this.merging(thread, policy)) this.repo.atomic(() => { this.evals.start(thread.key, policy) })
     }
+  }
+  /** Whether the Thread's queued Triggers are still inside their Sources' merge window, so its Eval has to wait. */
+  private merging(thread: Thread, policy: Policy): boolean {
+    const now = Date.parse(this.options.now?.() ?? new Date().toISOString())
+    let until = 0
+    for (const id of thread.pending) {
+      const trigger = this.repo.triggers.get(id)
+      const window = trigger ? policy.mergeWindowMs?.(trigger.source) ?? 0 : 0
+      const at = trigger ? Date.parse(trigger.at) : Number.NaN
+      if (window > 0 && Number.isFinite(at)) until = Math.max(until, at + window)
+    }
+    return until > now
   }
 
   // The main Session

@@ -123,6 +123,22 @@ export class Evals extends EnginePart {
     return thread && this.candidateOf(thread)
   }
   /**
+   * Accept a Source's self-authenticated explicit request directly, without an Eval or the Policy gate: the Source has
+   * already authenticated the sender, so its request never reaches the main Session. Used only by the BQA Source.
+   */
+  acceptDirect(triggerId: string, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Decision {
+    const trigger = this.repo.triggers.get(triggerId)
+    if (!trigger) throw new UserError('unknownTrigger')
+    const thread = this.thread(trigger.threads[0]!)
+    const at = this.now()
+    // Intake queued the Trigger for its usual Eval; the Source's own accept takes it out of that queue.
+    if (thread.pending.includes(triggerId)) { thread.pending = thread.pending.filter(id => id !== triggerId); this.repo.threads.save(thread) }
+    const evaluation: Evaluation = { id: key('eval', thread.key, 'source', triggerId), threadKey: thread.key, triggerIds: [triggerId], primary: triggerId,
+      strength: 'explicit', actor: trigger.actor, basis: { source: trigger.source, via: 'addressed', addressed: 'direct' },
+      policyVersion: this.policy().version, startedAt: at, deadline: at }
+    return this.accept(thread, evaluation, outcome)
+  }
+  /**
    * Decide a Trigger: the Eval that holds it, or a direct Eval of it alone when none does.
    * @throws UserError when the Trigger is unknown or not admissible, `outcome.evalId` names an Eval that has finished, a
    * ticket's worker still decides the Trigger and the outcome is not a stop, or an inferred candidate is accepted outside `auto`

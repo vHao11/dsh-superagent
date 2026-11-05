@@ -56,11 +56,11 @@ export interface HttpHost {
   models(): Promise<ModelCatalog>
 }
 /**
- * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
+ * Represents a client-facing 400, 403, 404, 409 or 500 error raised during management or source route parsing or lookup.
  * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
  */
-class RouteError extends Error { constructor(readonly status: 400 | 404 | 500, message: string) { super(message) } }
-async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
+export class RouteError extends Error { constructor(readonly status: 400 | 403 | 404 | 409 | 500, message: string) { super(message) } }
+export async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
   let size = 0; const chunks: Buffer[] = []
   for await (const chunk of req) {
     const bytes = Buffer.from(chunk); size += bytes.length
@@ -70,7 +70,7 @@ async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown }
   catch { throw new RouteError(400, 'The request body is not JSON') }
 }
-function json(res: ServerResponse, status: number, value: unknown): void {
+export function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
 }
 export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
@@ -79,7 +79,7 @@ export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number):
   return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
-function failure(error: unknown): [number, Record<string, unknown>] {
+export function failure(error: unknown): [number, Record<string, unknown>] {
   if (error instanceof z.ZodError) {
     const issues = error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message }))
     return [400, { error: `Invalid settings: ${issues.map(issue => issue.path).join(', ')}`, issues }]

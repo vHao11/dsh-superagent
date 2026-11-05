@@ -162,6 +162,18 @@ Setup must succeed before polling or work starts. Overview lists missing require
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
+### UME Source
+
+The UME Source reads UME message-capture's exported `data/tasks.json`; it never reads the client's local database and never sends messages. Enable it on the Source card and set the export file's path, then register its ten-minute refresh with `scripts/setup-ume-refresh-task.ps1` (pass `-RefreshScript` when ume-message-capture lives elsewhere; `-Action uninstall` removes it). The refresh runs the capture tool's own `scripts/refresh.ps1` hidden, without overlapping itself.
+
+A UME conversation is never addressed to the agent, so by default it can only become an inferred candidate. To let the main Session accept one directly, list the colleague in the UME Policy's allow list and set that row's **On the list · no mention** cell to **Explicit**; only then does the admission table make the conversation an explicit request. The export holds private chats: it stays in the local state, is never committed, and any sample used for tests or screenshots must be desensitized.
+
+### BQA Source and candidate batches
+
+The BQA Source receives questions from the BQA service on `POST /bqa/api/questions` (loopback only, `x-bqa-secret`), creates their Tickets without the main Session when `autoAccept` is `explicit`, and sends each `ready` report's full text back to `POST <bqaBaseUrl>/api/internal/superagent/answers`. Set the same `BQA_SHARED_SECRET` on both sides; the secret is read from the environment only, never stored in settings. Create the configured task type (default `consult`) under **Execution** first, and give the tickets its directory and model.
+
+Candidate delivery can be batched per Source in `settings.eval.batches`, for example `{"ume":{"windowSeconds":600,"maxBatch":20,"maxPerMinute":2,"mergeWindowSeconds":30}}`. A missing entry keeps immediate delivery. The panel has no form for it yet; save the `eval` block through the management API or the settings tool.
+
 ### Management API
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.

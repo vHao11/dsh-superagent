@@ -23,6 +23,10 @@ export interface SettingsVersion {
   revision: number; savedAt: string; source: SettingsOrigin | 'internal'; block?: SettingsSave
   policyVersion: string; policyChanged: boolean; notified: string[]; settings: Settings
 }
+/** A candidate waiting in a Source's batch window before its card is delivered to the main Session. */
+export interface BatchRow { evalId: string; triggerId: string; source: string; dueAt: number; createdAt: string }
+/** A Source with candidates waiting in its batch window, and when its earliest batch is due (epoch ms). */
+export interface BatchDue { source: string; dueAt: number }
 /**
  * Generated columns and partial indexes defining active working sets so passes scan only active rows.
  * Older databases missing a column get it added on open and populated by SQLite from stored JSON rows.
@@ -80,10 +84,13 @@ export class Store implements Repositories {
             CREATE TABLE IF NOT EXISTS effect (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL,
               generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
               since TEXT NOT NULL, PRIMARY KEY (kind, key));
+            CREATE TABLE IF NOT EXISTS batch (eval_id TEXT PRIMARY KEY, trigger_id TEXT NOT NULL, source TEXT NOT NULL,
+              due_at INTEGER NOT NULL, created_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
             CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
             CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
+            CREATE INDEX IF NOT EXISTS batch_due ON batch(source, due_at);
           `)
           this.addColumns()
           // Each step only runs on databases older than it, so a schema 11 database is not re-migrated through schema 10 shapes.
@@ -246,6 +253,37 @@ export class Store implements Repositories {
     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
     save: (decision: Decision): void => { this.db.prepare('INSERT INTO decision VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, thread=excluded.thread').run(decision.id, decision.threadKey, JSON.stringify(decision)) },
     byThread: (threadKeyValue: string): Decision[] => this.db.prepare('SELECT value FROM decision WHERE thread=? ORDER BY rowid').all(threadKeyValue).map(row => JSON.parse(String(row.value)) as Decision),
+  }
+  /** Candidates waiting in a Source's batch window; `Batches` is their only writer. */
+  readonly batches = {
+    /** Records a candidate for a later batch delivery, replacing any earlier record of the same Eval. */
+    add: (row: BatchRow): void => {
+      this.db.prepare(`INSERT INTO batch (eval_id, trigger_id, source, due_at, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(eval_id) DO UPDATE SET trigger_id = excluded.trigger_id, source = excluded.source, due_at = excluded.due_at, created_at = excluded.created_at`)
+        .run(row.evalId, row.triggerId, row.source, row.dueAt, row.createdAt)
+    },
+    /** Candidates of `source` whose window ended at or before `now`, oldest first. */
+    due: (source: string, now: number, limit: number): BatchRow[] => this.batchRows('SELECT * FROM batch WHERE source = ? AND due_at <= ? ORDER BY due_at, created_at LIMIT ?', source, now, limit),
+    /** Every candidate waiting for `source`, oldest first. */
+    all: (source: string): BatchRow[] => this.batchRows('SELECT * FROM batch WHERE source = ? ORDER BY due_at, created_at', source),
+    /** The candidate of `source` whose batch is due first, if any. */
+    next: (source: string): BatchRow | undefined => this.batchRows('SELECT * FROM batch WHERE source = ? ORDER BY due_at, created_at LIMIT 1', source)[0],
+    /** Sources with candidates waiting, each with its earliest due time. */
+    sources: (): BatchDue[] => this.db.prepare('SELECT source, MIN(due_at) AS due_at FROM batch GROUP BY source ORDER BY source')
+      .all().map(row => ({ source: String(row.source), dueAt: Number(row.due_at) })),
+    /** How many candidates `source` waits to batch, or all waiting candidates when omitted. */
+    count: (source?: string): number => Number((source === undefined
+      ? this.db.prepare('SELECT COUNT(*) AS n FROM batch').get()
+      : this.db.prepare('SELECT COUNT(*) AS n FROM batch WHERE source = ?').get(source))?.n ?? 0),
+    /** Forgets the candidates of delivered or abandoned Evals. */
+    remove: (evalIds: readonly string[]): void => {
+      const remove = this.db.prepare('DELETE FROM batch WHERE eval_id = ?')
+      for (const evalId of evalIds) remove.run(evalId)
+    },
+  }
+  private batchRows(sql: string, ...parameters: SQLInputValue[]): BatchRow[] {
+    return this.db.prepare(sql).all(...parameters).map(row => ({ evalId: String(row.eval_id), triggerId: String(row.trigger_id),
+      source: String(row.source), dueAt: Number(row.due_at), createdAt: String(row.created_at) }))
   }
   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
   readonly read: ReturnType<typeof storeReads>

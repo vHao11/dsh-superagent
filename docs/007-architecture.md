@@ -335,6 +335,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
+| `src/app/batches.ts` | The Batches queue: one Source's candidates delivered as one `candidate_batch` message after its window, under its per-minute limit, recovered from the `batch` table after a restart |
+| `src/app/bqa-http.ts` | The `/bqa/api` routes the BQA service pushes to: the loopback and `x-bqa-secret` checks, question submission with its `requestId` idempotency, ticket stops and health |
+| `src/app/bqa-reply.ts` | `bqaDirectReply`: a BQA ticket's `ready` report as the answer callback, or its status for blocked, failed and dropped |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
@@ -376,6 +379,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
+| `src/sources/schedule.ts` | The Schedule kind and plugin entry, exported as `./schedule-watch`: interval tasks declared in settings, each able to feed superagent |
+| `src/sources/ume.ts` | The UME kind and plugin entry, exported as `./ume-watch`: it reads UME message-capture's exported `tasks.json` and turns changed conversations into Triggers, without reading the client store or sending messages |
+| `src/sources/bqa.ts` | The BQA kind and plugin entry, exported as `./bqa-watch`: question Triggers, the answer Channel that calls BQA's internal endpoint, its task type and health |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
@@ -399,7 +405,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/feishu.ts`, `src/sources/schedule.ts`, `src/sources/ume.ts` and `src/sources/bqa.ts` are also the entries of the five Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, `./schedule-watch`, `./ume-watch` and `./bqa-watch`. The bundle's `cordis.patch.yml` inserts all five plugins, with Feishu, UME and BQA disabled.
 
 ## Tests
 
@@ -420,6 +426,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/windows-paths.spec.ts` | Windows drive-letter configuration, `PATHEXT` command resolution, case-insensitive directory comparison, and the forward-slash git credential helper |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
+| `tests/batches.spec.ts` | The Batches queue: one delivery per window, the batch message's cards and `candidateDelivered`, the per-minute limit and restart recovery |
+| `tests/ume.spec.ts` | The UME Source: the export's conversations as Triggers, its watermark, and the plugin entry |
+| `tests/bqa.spec.ts` | The BQA Source: question Triggers, the inbound routes with their secret, `requestId` idempotency, the direct reply and the answer callback |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
