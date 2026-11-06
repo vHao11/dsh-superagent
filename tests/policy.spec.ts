@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed,
-  unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
+import { SettingsSchema, TaskTypeSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender,
+  anyoneAllowed, unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
+import { deploymentBlockedCommands, executorProfile } from '../src/app/executor-profile.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -535,5 +536,45 @@ describe('task types', () => {
     const legacy = assessmentOutcome(assessment, SettingsSchema.parse({ policy: { rules } }), 'explicit')
     expect(legacy).toMatchObject({ kind: 'accept' })
     expect(legacy).not.toHaveProperty('taskType')
+  })
+})
+
+describe('task type execution profile', () => {
+  it('defaults every new profile field to inherit, and accepts the opencode engine and its parameters', () => {
+    const settings = SettingsSchema.parse({})
+    expect(settings.executor).toMatchObject({ opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart',
+      opencodePermissionPreset: 'smart', opencodePermissionRules: [] })
+    const plain = TaskTypeSchema.parse({ id: 'docs', name: 'Docs', description: 'Docs work.', directory: 'D:\\w\\docs' })
+    expect(plain).toMatchObject({ engine: null, claude: null, opencode: null, prepare: null, blockedCommands: null })
+    expect(TaskTypeSchema.parse({ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'opencode',
+      claude: { model: 'claude-x' }, opencode: { approval: 'deny', permissionPreset: 'safe' }, prepare: 'npm ci', blockedCommands: ['cli-x'] }))
+      .toMatchObject({ engine: 'opencode', claude: { model: 'claude-x', permissionMode: null }, opencode: { approval: 'deny' },
+        prepare: 'npm ci', blockedCommands: ['cli-x'] })
+  })
+  it('resolves each profile field over the executor fallback, field by field, with \'\' and [] as explicit none', () => {
+    const settings = SettingsSchema.parse({ executor: { prepare: 'global-prepare', blockedCommands: ['global-cli'],
+      claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true,
+      opencodeModel: 'opencode/model', opencodeAgent: 'build', opencodeApproval: 'ask', opencodePermissionPreset: 'safe',
+      taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'claude-code',
+        prepare: 'type-prepare', blockedCommands: [], claude: { model: 'claude-type', permissionMode: 'auto', approval: 'approve',
+          effort: '', ultracode: false }, opencode: { approval: 'deny' } }] } })
+    expect(executorProfile(settings, settings.executor.taskTypes[0]!)).toEqual({ engine: 'claude-code', prepare: 'type-prepare',
+      blockedCommands: [], claude: { bin: '', model: 'claude-type', permissionMode: 'auto', approval: 'approve', effort: '', ultracode: false },
+      opencode: { model: 'opencode/model', agent: 'build', approval: 'deny', permissionPreset: 'safe', permissionRules: [] } })
+    // Everything a type leaves null inherits; a type that sets no profile, and no type at all, resolve to the fallbacks.
+    const inherited = { engine: 'dsh', prepare: 'global-prepare', blockedCommands: ['global-cli'],
+      claude: { bin: '', model: 'claude-global', permissionMode: 'plan', approval: 'deny', effort: 'low', ultracode: true },
+      opencode: { model: 'opencode/model', agent: 'build', approval: 'ask', permissionPreset: 'safe', permissionRules: [] } }
+    expect(executorProfile(settings, TaskTypeSchema.parse({ id: 'plain', name: 'Plain', description: 'Plain work.',
+      directory: 'D:\\w\\plain' }))).toEqual(inherited)
+    expect(executorProfile(settings, undefined)).toEqual(inherited)
+  })
+  it('enforces the union of the executor\'s blocked commands and every type\'s declared list', () => {
+    const settings = SettingsSchema.parse({ executor: { blockedCommands: ['global-cli', 'shared-cli'],
+      taskTypes: [{ id: 'a', name: 'A', description: 'A work.', directory: 'D:\\w\\a', blockedCommands: ['type-a-cli', 'shared-cli'] },
+        { id: 'b', name: 'B', description: 'B work.', directory: 'D:\\w\\b', blockedCommands: [] },
+        { id: 'c', name: 'C', description: 'C work.', directory: 'D:\\w\\c' }] } })
+    expect(deploymentBlockedCommands(settings)).toEqual(['global-cli', 'shared-cli', 'type-a-cli'])
+    expect(deploymentBlockedCommands(SettingsSchema.parse({ executor: { blockedCommands: ['only-global'] } }))).toEqual(['only-global'])
   })
 })

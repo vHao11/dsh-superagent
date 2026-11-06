@@ -8,6 +8,7 @@ import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { resolveRoleModel } from './role-models.ts'
+import { deploymentBlockedCommands } from './executor-profile.ts'
 import { changedPaths, settingsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
 import { setupChanged, type Setup } from './setup.ts'
@@ -20,11 +21,15 @@ import { KV } from '../kv.ts'
  */
 export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
-/** Executor settings that control shell execution paths, the native Claude Code executable, prepare commands, and command shims. */
+/** Executor settings that control shell execution paths, worker engines, the native Claude Code/opencode executables and parameters, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.directoryMode, executor.prepare,
   executor.blockedCommands, executor.engine, executor.claudeBin, executor.claudeModel, executor.claudePermissionMode,
   executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode,
-  executor.taskTypes.map(type => [type.id, type.directory, type.directoryMode])])
+  executor.opencodeModel, executor.opencodeAgent, executor.opencodeApproval, executor.opencodePermissionPreset,
+  executor.opencodePermissionRules,
+  // Every task type carries its own execution profile, which a non-panel origin must not change either.
+  executor.taskTypes.map(type => [type.id, type.directory, type.directoryMode, type.engine, type.prepare, type.blockedCommands,
+    type.claude, type.opencode])])
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -191,9 +196,9 @@ export class Settings {
       if (origin !== 'tool') sessions.notify(...settingsNotice(block, changedPaths(old, settings)))
       if (before !== after) engine.policyChanged(before, after, effects)
     })
-    // Rewrite worker command shims immediately when `blockedCommands` changes.
-    const blocked = settings.executor.blockedCommands
-    const changed = blocked.join(' ') !== old.executor.blockedCommands.join(' ')
+    // Rewrite worker command shims immediately when the deployment's blocked-command union changes (Q1=A: every type's list is enforced deployment-wide).
+    const blocked = deploymentBlockedCommands(settings)
+    const changed = blocked.join(' ') !== deploymentBlockedCommands(old).join(' ')
     if (changed) await this.host.setup.blockCommands(blocked)
     // When restarting, the notice stays pending until after the restart; `setup.restart()` defers until this call returns.
     const delivery = restarting ? 'pending' : await sessions.delivery(`settings:${block}`)

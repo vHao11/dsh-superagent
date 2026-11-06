@@ -11,6 +11,7 @@ import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import { BQA_MCP_SERVER, BQA_MCP_TOOL_NAMES } from '../sources/bqa.ts'
 import { attachClaudeCode } from '../executor/claude-code.ts'
 import { OPENCODE_UNAVAILABLE } from '../executor/opencode.ts'
+import { claudeSettingsForTicket } from './executor-profile.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -312,7 +313,8 @@ export class Sessions {
     // through to the DSH model loop. The report tool is looked up when a turn reports, by which time tool setup is done.
     if (!master && ticket && this.engineOf(ticket) === 'claude-code') binding.disposers.push(attachClaudeCode({
       context: this.ctx, agent, ticket, store: this.host.store,
-      settings: () => this.host.store.settings().executor, logger: this.ctx.logger, lifetime: this.host.lifetime,
+      // The Ticket's snapshotted Claude Code profile, so the driver reads type-level parameters over the global fallbacks.
+      settings: () => claudeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
       environment: () => this.host.environment(ticket),
     }))
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())

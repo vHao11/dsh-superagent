@@ -22,11 +22,11 @@ function seedTypes(types: ReturnType<typeof type>[]): void {
 }
 /** Stamps a Trigger the way a Source's context does for its configured default; source-level stamping has its own spec. */
 const withSourceDefault = (trigger: Trigger, taskType: string): Trigger => ({ ...trigger, taskType })
-async function accept(trigger: Trigger, taskType?: string) {
+async function accept(trigger: Trigger, taskType?: string, engine?: 'dsh' | 'claude-code' | 'opencode') {
   h.runtime.receive(trigger)
   await h.runtime.idle()
   const result = await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-test',
-    acknowledgement: '收到，处理中。', ...(taskType ? { taskType } : {}) })
+    acknowledgement: '收到，处理中。', ...(taskType ? { taskType } : {}), ...(engine ? { engine } : {}) })
   await h.runtime.idle()
   return h.runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
 }
@@ -171,5 +171,75 @@ describe('task types', () => {
     expect(workToolsFor(true)).not.toContain('write')
     expect(workToolsFor(true)).not.toContain('pwsh')
     expect(workToolsFor(false)).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'bash', 'subagent']))
+  })
+
+  it('snapshots the type\'s prepare, blocked commands and Claude Code profile, and a fixed type skips prepare', async () => {
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'global-prepare', blockedCommands: ['global-cli'],
+      claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true,
+      taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), prepare: 'npm ci',
+        blockedCommands: ['type-cli'], claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask', effort: 'high', ultracode: false } })] } })
+    h.subprocess.spawn.mockClear()
+
+    const ticket = await accept(feishu('16', '@bot native work'), 'native')
+
+    expect(ticket.execution).toMatchObject({ prepare: 'npm ci', blockedCommands: ['type-cli'],
+      claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask', effort: 'high', ultracode: false } })
+    // The Ticket's execution variables carry the list its type declares, not the executor fallback.
+    expect(h.runtime.ticketEnvironment(ticket).find(variable => variable.key === 'DSH_SUPERAGENT_BLOCKED_COMMANDS')?.value).toBe('type-cli')
+    // The fixed directory mode skips the prepare command, also when the snapshot names one.
+    expect(h.subprocess.spawn.mock.calls.some(([spec]) => (spec as { argv: string[] }).argv.join(' ').includes('npm ci'))).toBe(false)
+  })
+
+  it('runs a per-ticket type\'s snapshotted prepare command before the worker starts', async () => {
+    const settings = h.runtime.store.settings()
+    const root = join(h.directory, 'per-ticket')
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'global-prepare',
+      taskTypes: [type({ id: 'native', name: 'Native', directory: root, directoryMode: 'per-ticket', prepare: 'echo type-prepare' })] } })
+    h.subprocess.spawn.mockClear()
+
+    const ticket = await accept(feishu('17', '@bot native work'), 'native')
+
+    const runs = h.subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string })
+      .filter(spec => spec.argv[0] === 'sh')
+    expect(runs).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'echo type-prepare'], cwd: root })])
+    expect(ticket.execution!.directory).toBe(join(root, `fix-test-${ticket.id.slice(0, 12)}`))
+  })
+
+  it('snapshots the type engine, an explicit override and which evidence chose the engine', async () => {
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'dsh',
+      taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), engine: 'claude-code' })] } })
+
+    const typed = await accept(feishu('18', '@bot native work'), 'native')
+    expect(typed.execution).toMatchObject({ engine: 'claude-code', engineSource: 'type' })
+    // An explicit engine still wins over the type's, and the choice is recorded as such.
+    const explicit = await accept(feishu('19', '@bot native work with dsh'), 'native', 'dsh')
+    expect(explicit.execution).toMatchObject({ engine: 'dsh', engineSource: 'explicit' })
+    // A type that names no engine, and the legacy deployment, inherit the executor fallback.
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'dsh',
+      taskTypes: [type({ id: 'plain', name: 'Plain', directory: join(h.directory, 'plain') })] } })
+    const inherited = await accept(feishu('20', '@bot plain work'), 'plain')
+    expect(inherited.execution).toMatchObject({ engine: 'dsh', engineSource: 'global' })
+  })
+
+  it('snapshots the executor fallbacks for a legacy Ticket, and an older Ticket resolves its profile when it runs', async () => {
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'echo legacy-prepare',
+      blockedCommands: ['global-cli'], claudeModel: 'claude-global' } })
+
+    const ticket = await accept(feishu('21', '@bot fix this'))
+    expect(ticket.execution).toMatchObject({ engine: 'dsh', engineSource: 'global', prepare: 'echo legacy-prepare',
+      blockedCommands: ['global-cli'],
+      claude: { model: 'claude-global', permissionMode: 'auto', approval: 'approve', effort: '', ultracode: false } })
+    // A Ticket accepted before the profile was snapshotted resolves its type's current list for its environment.
+    const stored = h.runtime.store.tickets.get(ticket.id)!
+    h.runtime.store.tickets.save({ ...stored, execution: { ...stored.execution!, prepare: undefined, blockedCommands: undefined,
+      claude: undefined } })
+    h.runtime.store.saveSettings({ ...h.runtime.store.settings(),
+      executor: { ...h.runtime.store.settings().executor, blockedCommands: ['new-global'] } })
+    const older = h.runtime.store.tickets.get(ticket.id)!
+    expect(h.runtime.ticketEnvironment(older).find(variable => variable.key === 'DSH_SUPERAGENT_BLOCKED_COMMANDS')?.value)
+      .toBe('new-global')
   })
 })

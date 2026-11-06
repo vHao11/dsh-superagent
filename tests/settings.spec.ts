@@ -1,5 +1,6 @@
 /** Concurrency, retry, and validation tests for settings saves, pause toggling, and policy synchronization. */
 import { afterEach, expect, it, vi } from 'vitest'
+import { join } from 'node:path'
 import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { Setup } from '../src/app/setup.ts'
@@ -96,6 +97,18 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   expect([store.blockRevision('pause'), inject.mock.calls.length, h.runtime.effects.pending('notice')]).toEqual([revision, 0, false])
   vi.spyOn(Setup.prototype, 'configured').mockReturnValue(false)
   await expect(settings.sync('feishu')).rejects.toThrow(new UserError('nothingToSync', { source: 'feishu' }))
-  vi.mocked(Setup.prototype.configured).mockRestore()
+  vi.mocked(Setup.prototype).configured.mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
+})
+
+it('rewrites the worker shims with the deployment-wide union when a task type\'s blocked commands change', async () => {
+  h = await startRuntime()
+  const block = vi.spyOn(Setup.prototype, 'blockCommands')
+  const native = { id: 'native', name: 'Native', description: 'Native work.', directory: join(h.directory, 'native'),
+    blockedCommands: ['type-cli'] }
+  const executor = h.runtime.store.settings().executor
+  await h.runtime.settings.save('executor', { ...executor, blockedCommands: ['global-cli'], taskTypes: [native] },
+    h.runtime.store.blockRevision('executor'), 'panel')
+  // The shims enforce the union: a type's declaration over-blocks every Ticket, fail closed.
+  expect(block).toHaveBeenCalledWith(['global-cli', 'type-cli'])
 })

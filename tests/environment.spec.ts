@@ -46,6 +46,14 @@ describe('worker shims', () => {
     expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
     expect(readdirSync(bin)).not.toContain('git')
   })
+  it('writes one failing shim for every command of the deployment-wide union it is given', async () => {
+    // The settings side resolves the union of the executor's list and every task type's declared list before this write.
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['union-a', 'union-b'])
+    const bin = workerBin(dir)
+    expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'union-a', 'union-b'])
+    expect(readFileSync(join(bin, 'union-b'), 'utf8'))
+      .toContain('union-b is blocked in this installation; use gh, which acts as agent-bot.')
+  })
   it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])

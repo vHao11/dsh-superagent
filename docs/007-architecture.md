@@ -198,7 +198,7 @@ That context supplies deployment and commands, setup readiness (`ready`, `config
 
 `DshExecutor` (`src/executor/dsh.ts`) provides one Session and directory per Ticket. `start` and `deliver` enqueue `launch` and `delivery` effects. `stop` cancels the turn through `Store.afterCommit`, so a rolled-back end does not stop the worker.
 
-`prepare(ticket, outcome)` supplies the Engine's `prepareTicket` hook: short name, directory and `ticketExecution` assignment text. `workerSessionId(ticket.id)` derives the Session id.
+`prepare(ticket, outcome)` supplies the Engine's `prepareTicket` hook: short name, directory, `ticketExecution` assignment text and the resolved execution profile (engine with its source, prepare command, blocked commands, Claude Code/opencode parameters) snapshotted onto the Ticket. `workerSessionId(ticket.id)` derives the Session id. `prepareDirectory` runs the snapshotted prepare command unless the Ticket's directory mode is fixed.
 
 `WorkerSlots` reserves capacity before a launch or a delivery that wakes an idle worker. A human message can use one slot beyond `maxWorkers`, and wakes have priority over launches. `activeCount` supplies panel load.
 
@@ -232,7 +232,7 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 ### Sessions
 
-`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
+`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. A worker whose engine is `claude-code` mounts the native bridge with the Claude Code profile its Ticket snapshotted (or, on older Tickets, the profile resolved from its type and the current settings); a worker whose engine is `opencode` fails with an actionable error until its driver lands. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
 
 `prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
@@ -293,7 +293,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/index.ts` | The main plugin entry: reads the machine settings, waits for the state-directory lock, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
-| `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
+| `src/policy.ts` | The Policy: the settings schemas by block, including each task type's execution profile (engine, prepare, blocked commands and engine parameters), the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
@@ -315,7 +315,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/memory.ts` | `MemoryRepositories`: the Store's repositories in memory, in the Store's order and with its nested rollback, for domain tests |
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
-| `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
+| `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads; the command shims install the union of every task type's blocked commands |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
@@ -325,7 +325,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
-| `src/app/settings.ts` | Settings |
+| `src/app/settings.ts` | Settings: block validation and saves; the panel-only guard covers every task type's execution profile, and a save rewrites the command shims when the deployment-wide blocked-command union changes |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/executor-profile.ts` | `executorProfile`: the effective execution profile of a task type (engine, prepare, blocked commands, Claude Code and opencode parameters), resolved over the executor's fallbacks |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
@@ -356,7 +356,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
-| `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
+| `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution` (which resolves and snapshots the task type's execution profile), `inputMessage` and `mandateInstructions` |
 | `src/executor/claude-code.ts` | The native Claude Code worker bridge: one persistent `claude` process per worker Session, the stream-json projection into Session events, `AskUserQuestion` and tool-permission cards through `userQuestions`, and `DSH_REPORT` execution through the worker's `orchestrator_report` tool |
 | `src/executor/opencode.ts` | The native opencode worker bridge (W2): the attachment contract, the KV record of its ACP session, and — until that driver lands — the explicit failure that keeps an opencode Ticket from running on the DSH loop by mistake |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
@@ -416,7 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
-| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations, and assessment outcomes with the task type each resolves |
+| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations, each task type's execution profile resolution, and assessment outcomes with the task type each resolves |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
@@ -425,7 +425,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/claude-code.spec.ts` | The native Claude Code bridge's pure mappings: question ids and answers, permission cards, assistant and tool-result content, tool names, worker reports, and executable resolution |
-| `tests/claude-code-driver.spec.ts` | The native Claude Code driver over a fake stream-json process: turn projection, terminal reports, `--resume` retry, question cards, and tool permissions; one opt-in live turn (`CLAUDE_CODE_SMOKE=1`) checks the same path against the installed CLI |
+| `tests/claude-code-driver.spec.ts` | The native Claude Code driver over a fake stream-json process: turn projection, terminal reports, `--resume` retry, question cards, and tool permissions; one opt-in live turn (`CLAUDE_CODE_SMOKE=1`) checks the same path against the installed CLI; the Claude Code profile a Ticket snapshots |
 | `tests/windows-paths.spec.ts` | Windows drive-letter configuration, `PATHEXT` command resolution, case-insensitive directory comparison, and the forward-slash git credential helper |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
@@ -440,22 +440,22 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
-| `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
+| `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP; the panel-only guard over task-type execution profiles and the deployment-wide blocked-command shims |
 | `tests/runtime-lock.spec.ts` | Waiting out a lock a killed host left behind, and giving up while it is still fresh |
-| `tests/task-types.spec.ts` | Required task classification: explicit ids, unknown ids refused, Source and assessor evidence, Ticket directory/model/instruction snapshots, the legacy single directory, the operator's required type, and the settings API |
+| `tests/task-types.spec.ts` | Required task classification: explicit ids, unknown ids refused, Source and assessor evidence, Ticket directory/model/instruction snapshots, the type's engine, prepare, blocked commands and Claude Code profile snapshotted onto Tickets, the legacy single directory, the operator's required type, and the settings API |
 | `tests/task-types-source.spec.ts` | A Source's default task type: Feishu chat rows and the GitHub repository's `taskType`, invalid ids, and stamping the default onto a received Trigger |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
-| `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
-| `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
+| `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, the refusals of the pause, a sync and a block, and a task type's blocked commands rewriting the deployment-wide shims |
+| `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to, and the settings history of task types and the worker engine |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
-| `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
+| `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment including the shims of the deployment-wide blocked-command union, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |

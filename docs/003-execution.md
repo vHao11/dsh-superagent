@@ -26,11 +26,11 @@ Each Ticket gets an Executor Session named `worker-<ticket id>`. Its directory d
 
 ### Task types
 
-With no types configured, the executor root and mode above apply unchanged, and `execution.taskTypeSource` is `legacy`. Once Execution settings define task types, the Ticket's type decides instead: its `directory` and `directoryMode` replace the executor root and mode, its `model` (or the executor model when empty) becomes the worker's model, and its `instructions` join the worker system prompt.
+With no types configured, the executor root and mode above apply unchanged, and `execution.taskTypeSource` is `legacy`. Once Execution settings define task types, the Ticket's type decides instead: its `directory` and `directoryMode` replace the executor root and mode, its `model` (or the executor model when empty) becomes the worker's model, and its `instructions` join the worker system prompt. The type also carries its execution profile: `engine` (the worker engine), `prepare` and `blockedCommands`, the Claude Code parameters `model`, `permissionMode`, `approval`, `effort` and `ultracode`, and the opencode parameters `model`, `agent`, `approval` and `permissionPreset`. Each null field inherits the executor's fallback, while an empty `prepare` command or an empty `blockedCommands` list is an explicit "none".
 
 There is no default task type, and work cannot proceed unclassified: every accepted Ticket and every accepted Eval decision must name one of the configured type ids. Work that cannot be classified is refused with `unclassifiedWork`, and an id that is not among the configured types is refused with `unknownTaskType`.
 
-The type comes from the first available evidence, in order: an explicit id from the sorter or operator, the Source's default for the Trigger, then the assessor's chosen type. An explicit id is always final: an unknown explicit id is refused even when a Source default exists, and when no evidence names a type the work is refused. The sorter chooses only a type id; the host resolves and snapshots the profile, so a later settings edit does not move an in-flight Ticket.
+The type comes from the first available evidence, in order: an explicit id from the sorter or operator, the Source's default for the Trigger, then the assessor's chosen type. An explicit id is always final: an unknown explicit id is refused even when a Source default exists, and when no evidence names a type the work is refused. The sorter chooses only a type id; the host resolves and snapshots the profile (the engine and its source, `prepare`, `blockedCommands` and the engine parameters), so a later settings edit does not move an in-flight Ticket.
 
 A Source can set its own default. A Feishu chat row's `taskType` covers messages in that chat, and a GitHub Source's `taskType` covers every Trigger from its repository; both apply only when the sorter omits the type. The panel shows how a Ticket's type was chosen next to it, from `execution.taskTypeSource`: **Sorter specified**, **Source default**, **Assessor chosen**, or **Legacy**.
 
@@ -42,14 +42,16 @@ The main Session uses `dsh-superagent-router`, with the same 5-second shell and 
 
 ### The worker engine
 
-Execution settings choose the engine for newly accepted Tickets; each Ticket keeps the engine recorded when it was accepted. Under `dsh`, the Executor is DeepSeek Harness's own model loop with the presets, tools and shell limits above. Under `claude-code`, one persistent native `claude` process drives the Executor Session:
+The Ticket's task type chooses the engine for newly accepted Tickets; an explicit engine on the acceptance overrides it, and the executor's global engine is the fallback. Each Ticket keeps the engine recorded when it was accepted (`execution.engine`, with `execution.engineSource` naming which evidence chose it: `explicit`, `type` or `global`). The global engine, prepare command, blocked commands and Claude Code parameters remain in the settings API, but the panel hides them in favor of the task types. Under `dsh`, the Executor is DeepSeek Harness's own model loop with the presets, tools and shell limits above. Under `claude-code`, one persistent native `claude` process drives the Executor Session:
 
 - The first step starts `claude` in the Ticket directory with stream-json input and output. The process stays alive across turns, so its multi-turn conversation remains native rather than a series of one-shot calls.
 - The assignment, Triggers, Inputs and messages a person types into the Session are sent as user messages. A card's `read` reference is expanded through the worker's `orchestrator_read` tool first, so the native worker sees the full request instead of only its preview. The worker uses Claude Code's own tools, skills, plugins, hooks, MCP servers and `CLAUDE.md`; DeepSeek Harness's work-tool set and shell job limits do not apply to it. The Ticket directory and prepare command still do, and the process inherits the worker command shims and git configuration, so `gh` and `lark-cli` act as the agent account and blocked commands fail by name.
 - The worker reports by ending its final message with a `DSH_REPORT` line. The host executes the worker's `orchestrator_report` tool with that report, so Ticket state, relays to the main Session and handoff rules are the same as for a DSH worker. The line is removed from the visible conversation.
 - The permission mode decides what Claude Code does without asking: `auto` reviews actions with its classifier, `default` (Manual) asks for most of them, `acceptEdits` accepts edits, `plan` only reads, and `bypassPermissions` skips the checks. A tool call the mode still routes to the bridge is answered by the approval setting: `approve` allows it without a person, `deny` refuses it, and `ask` shows a DSH question card with Allow once and Deny. The default is `auto` with `approve`, so a Ticket runs unattended. `AskUserQuestion` always becomes a question card with its options, because it asks for a decision rather than a permission.
 - The Claude Code session id is stored with the worker Session, so a restarted plugin resumes the same native conversation. A missing stored session is replaced by a fresh one and the step's messages are sent again.
-- The configured executable, model, permission mode, reasoning effort and Ultracode switch apply to new worker processes: `--effort` carries the level and `--settings '{"ultracode":true}'` turns on dynamic workflows. Without an executable, the host looks for `CLAUDE_CODE_BIN`, the per-user install, then `claude` on `PATH`.
+- The configured executable, and the model, permission mode, reasoning effort and Ultracode switch a Ticket accepted (its type's parameters over the executor's fallbacks), apply to new worker processes: `--effort` carries the level and `--settings '{"ultracode":true}'` turns on dynamic workflows. Without an executable, the host looks for `CLAUDE_CODE_BIN`, the per-user install, then `claude` on `PATH`.
+
+`opencode` is a selectable engine name. This build has no opencode driver yet, so a Ticket whose engine resolves to `opencode` fails its launch with an actionable error instead of silently running the DSH model loop.
 
 ### Background work and worker slots
 
@@ -73,6 +75,8 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory. In the fixed directory mode the directory is the configured root itself, so the prepare command is skipped: the deployment already points at the workspace the worker should use.
 
+The command comes from the Ticket's acceptance snapshot: its type's `prepare`, or the executor's when the type inherits (an empty value runs none). A Ticket accepted before per-type prepare commands existed resolves its type's command when it first launches. A fixed type's own `prepare` is stored and shown in the panel with a "does not run" note, but it never runs: the shared checkout must not be rewritten by concurrent Tickets.
+
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
 ### Concurrency
@@ -90,7 +94,7 @@ The prepare command and Executor instructions receive the same execution variabl
 | Variable | Registered by | Value |
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
-| `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
+| `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | The commands the Ticket's task type declares; the deployment enforces every type's declared commands' union (see below) |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
 | `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
@@ -99,6 +103,8 @@ The prepare command and Executor instructions receive the same execution variabl
 Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
 Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
+
+Blocked commands are declared per task type and snapshotted onto each Ticket. The shim directory enforces the union of the executor's list and every type's declared list, so a command one type blocks fails for every Ticket on every engine (over-block, fail closed); a DSH worker shares the host process's `PATH`, so it cannot be limited per type. Each Ticket's worker prompt and prepare command receive only its own declared list. The shims intercept calls by name only: an absolute path still runs, so this is not a security boundary. `gh`, `git` and `lark-cli` cannot be blocked.
 
 These wrappers and directories establish defaults, not a security boundary. A worker can still execute a program by absolute path.
 

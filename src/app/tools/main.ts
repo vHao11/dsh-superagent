@@ -54,7 +54,7 @@ const RouteItemSchema = z.object({
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   taskType: z.string().trim().max(64).nullish().describe('accept: the id of one task type from the Task types prompt section. Required when task types are configured and the trigger\'s Source sets no default; work cannot proceed unclassified.'),
-  engine: z.enum(ENGINE_NAMES).nullish().describe('accept: the worker engine for this ticket, overriding the executor setting.'),
+  engine: z.enum(ENGINE_NAMES).nullish().describe('accept: the worker engine for this ticket, overriding the task type\'s engine and then the executor fallback.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -171,7 +171,7 @@ const OperatorTaskSchema = z.object({
   request: z.string().trim().min(1).max(20000).describe('The person\'s request, copied as written; no added plan, criteria or instructions.'),
   worktree_name: WorktreeNameSchema.optional(),
   taskType: z.string().trim().max(64).optional().describe('The id of one task type from the Task types prompt section. Required when task types are configured: work cannot proceed unclassified.'),
-  engine: z.enum(ENGINE_NAMES).optional().describe('claude-code for the native Claude Code agent, dsh for DSH\'s agent; omit for the executor setting.'),
+  engine: z.enum(ENGINE_NAMES).optional().describe('claude-code for the native Claude Code agent, dsh for DSH\'s agent; omit for the task type\'s engine, then the executor fallback.'),
 }).strict()
 /**
  * `orchestrator_task_start`: start tasks the person asked for directly in this Session, without a Source candidate. Each item
