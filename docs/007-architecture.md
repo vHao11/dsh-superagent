@@ -53,7 +53,7 @@ Each part extends `EnginePart` (`src/core/part.ts`), which provides options and 
 
 | Part | Responsibility | Depends on |
 | --- | --- | --- |
-| `Intake` | A Source's Trigger: stored once with its disposition, recorded on its Threads and their correlations, fanned out to the subscribed Tickets and, unless it is a person's message that reached one, queued for Eval on its primary Thread | Tickets |
+| `Intake` | A Source's Trigger: stored once with its disposition, recorded on its Threads and their correlations, fanned out to the subscribed Tickets and, unless it is a person's message that reached one, queued for Eval on its primary Thread. A `per-message` Trigger reaches no Ticket, and a `per-thread` one reaches only the newest host Ticket of its actor (see `hostOf`), so continuous conversations never wake several historical Tickets | Tickets |
 | `Evals` | The Evals of Threads: batching, the gate's strength, actor and basis with the Trigger that gave them (`primary`), the deadline from the candidate's delivery and its shift by a pause, the requeue of an expired Eval, candidates, replays and hand-backs, the requeue on a Policy change, and the Decision each ends with: accept, stop, ignore or unavailable | Tickets |
 | `Tickets` | The Ticket lifecycle: creation from an accept with its Mandate, Subscriptions and first Assignment, the Threads it follows and their closes (`followsDone`), attached Threads and Threads followed for context, Inputs and notes, resume and the messages a resume refuses, retry, restart, stop and end, the Subscriptions it drops, and the notice of a Policy change to the Tickets it bears on | Replies |
 | `Assignments` | What the Executor and its workers report: an Assignment started, Inputs reached it or failed to, a restart interrupted it, and a worker's Report with its question for a person | Tickets, Replies |
@@ -65,7 +65,8 @@ Callers receive only their role's `Pick` of the Engine: `EngineForSources`, `Eng
 
 | Role | Method | Effect |
 | --- | --- | --- |
-| Sources | `receive(trigger)` | Stores a Trigger once and answers `stored`, `duplicate`, or `filtered` when no Source receives it; fans it out to the Tickets subscribed to its Threads, where a person's message resumes an ended Ticket at once unless processing is paused, and queues it for Eval on its primary Thread, unless it is a person's message that reached a Ticket, which stays that Ticket's |
+| Sources | `receive(trigger)` | Stores a Trigger once and answers `stored`, `duplicate`, or `filtered` when no Source receives it; fans it out to the Tickets subscribed to its Threads (only the one host Ticket for a `per-thread` Trigger, none for `per-message`), where a person's message resumes an ended Ticket at once unless processing is paused, and queues it for Eval on its primary Thread, unless it is a person's message that reached a Ticket, which stays that Ticket's |
+| Sources | `acceptSourceTrigger(trigger, accept)` | A self-authenticated Source's explicit request: stores the Trigger and, for `per-thread`, reuses the host Ticket Intake delivered it to (or just resumed) and writes this message's `requestId` into its Input note; only when there is no host does it create a new Ticket directly, without an Eval or the gate. Answers `{ result, decision?, ticketId? }`, the `ticketId` also for a duplicate; only BQA calls it |
 | Sources | `bindThread(ticketId, thread, own)` | Makes an open Ticket follow one of the Source's Threads, such as a pull request's, `own` when the Ticket opened it; a closed Thread bound again is open again. The Threads' closes, not a `ready` Report, end the Ticket |
 | Sources | `threadClosed(thread, outcome, at)` | A Thread closed: each open Ticket that follows it records the close, and ends once it is done with the Threads it follows (`followsDone`): no Thread it opened is open, or, when it opened none, every Thread it follows closed. It ends `merged` or `closed` as the latest of those closes did, unless work resumed after the close has not reported `ready`, or its Executor took up, by acknowledging or answering it, a person's follow-up it decides after its latest Report other than `progress`, or the end of its last turn; a `dropped` Report then ends it as the close did |
 | Main Session | `candidate(triggerId)` | The Eval that holds a Trigger, as its assessor sees it |
@@ -139,7 +140,7 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 - `version`, `paused` and `evalTimeoutMs` describe its current state.
 - `gate(trigger, thread, tickets)` returns admission strength and basis.
-- `revalidate(mandate)` checks whether an existing Mandate still holds.
+- `revalidate(mandate)` checks whether an existing Mandate still holds. An explicit `via:'addressed'` Mandate of a Source that authenticates its senders itself passes without the allowed list, while `SourceScope.authenticates` reports that Source installed, enabled and listening; only BQA declares `authenticates`.
 - `admitsInferred(rules)` permits proactive acceptance only in auto mode with enabled matching rules.
 
 `assessmentOutcome(assessment, settings, strength)` converts the model's assessment to an Engine outcome. It requires a judgement for every enabled rule, settled direction, a matching rule and evidence of intent. Outside auto mode, an inferred accept becomes a “would accept” record.
@@ -182,11 +183,13 @@ Each kind has a health entry under its name. It reports an error once one of its
 
 ### Sources
 
-Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. A kind declares its identity, title, description, configuration `schema` and `fields`, derived `facts`, and `health` entries. Optional behavior includes `scope`, a `channel` (`allowed`, `send`, `link`), `threadContext`, `find`, `policy`, `environment` and `refreshLabels`.
+Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. A kind declares its identity, title, description, configuration `schema` and `fields`, derived `facts`, and `health` entries. Optional behavior includes `scope`, `authenticates` (its own authentication is the sole admission path, as for BQA), a `channel` (`allowed`, `send`, `link`), `threadContext`, `find`, `policy`, `environment` and `refreshLabels`.
+
+Every built-in kind also has a `conversation` setting built from `src/sources/conversation.ts`: `off` gives each message its own conversation, `thread` continues one per Thread. BQA defaults to `off`, Feishu, GitHub and UME to `thread` (naming their existing behavior), and Schedule is fixed `off` with a read-only note. `SourceContext.receive` snapshots the mode onto each Trigger as `continuity` (`per-message` or `per-thread`) when the kind sets it, beside the task-type default.
 
 `SourceRegistry` (`registry.ts`) owns registered kinds and stored instances, and implements the Engine's `SourceScope`. Registration claims health entries on `HealthBoard`; duplicate claims and reserved `sync:` names are refused. A SourceContext writes only through its registration's claimed entries, so reports after unregistration do nothing.
 
-Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each kind that supports search.
+Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find`, `scope` and `authenticates`. `find` asks each kind that supports search; `authenticates` answers whether a kind declares self-authentication while its instance is enabled and listening.
 
 Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
 
@@ -293,19 +296,19 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/index.ts` | The main plugin entry: reads the machine settings, waits for the state-directory lock, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
-| `src/policy.ts` | The Policy: the settings schemas by block, including each task type's execution profile (engine, prepare, blocked commands and engine parameters), the Policy version, the gate and Mandate revalidation |
+| `src/policy.ts` | The Policy: the settings schemas by block, including each task type's execution profile (engine, prepare, blocked commands and engine parameters), the Policy version, the gate and Mandate revalidation, including the self-authenticating Source branch |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
 | `src/core/model.ts` | The domain types, among them the typed Ticket and `MandateBasis`, with `threadKey`, `ticketOutcome`, `reached`, `followupOwners`, `settled`, `waitsForPerson`, `liveTicket`, `runningAssignment`, `latestAssignment` and `latestReport` |
 | `src/core/operator.ts` | The internal operator Source: `OPERATOR_SOURCE`, `operatorActor`, `isOperatorTrigger` and `OperatorTask`, which only the main Session's task tools use |
-| `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope`, `Assessor`, `Executor`, `Outbox`, and the domain events |
+| `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope` (including `authenticates`), `Assessor`, `Executor`, `Outbox`, and the domain events |
 | `src/core/engine.ts` | The Engine, the core's entry point, and the role interfaces `EngineForSources`, `EngineForMainSession`, `EngineForPeople`, `EngineForSettings` and `EngineForExecutor` |
 | `src/core/part.ts` | `EnginePart`, the base of the Engine's parts, and `EngineOptions` |
-| `src/core/intake.ts` | `Intake`: Triggers from Sources, to their Tickets and, unless a person's message reached one, to Eval |
+| `src/core/intake.ts` | `Intake`: Triggers from Sources, to their Tickets and, unless a person's message reached one, to Eval; the single-host selection of `per-thread` conversations and the no-fan-out rule of `per-message` ones |
 | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions |
-| `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs |
+| `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs, including `noteInput`, which adds a routing note to a Trigger Input that waits for the worker |
 | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
 | `src/core/replies.ts` | `Replies`: the Engine's Channel writes |
 | `src/core/stage.ts` | `ticketStage` and `canRetry`: the Ticket stages of [003 Execution](003-execution.md) |
@@ -337,10 +340,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
 | `src/app/batches.ts` | The Batches queue: one Source's candidates delivered as one `candidate_batch` message after its window, under its per-minute limit, recovered from the `batch` table after a restart |
-| `src/app/bqa-http.ts` | The `/bqa/api` routes the BQA service pushes to: the loopback and `x-bqa-secret` checks, question submission with its `requestId` idempotency, ticket stops and health |
-| `src/app/bqa-reply.ts` | `bqaDirectReply`: a BQA ticket's `ready` report as the answer callback, or its status for blocked, failed and dropped |
+| `src/app/bqa-http.ts` | The `/bqa/api` routes the BQA service pushes to: the loopback and `x-bqa-secret` checks, question submission with its `requestId` idempotency and the accepted (new or reused) Ticket, ticket stops and health |
+| `src/app/bqa-reply.ts` | `bqaDirectReply`: a BQA ticket's `ready` report as the answer callback, or its status for blocked, failed and dropped; the answer goes to the Channel of the question the report answers, else the newest human BQA Input's, else the Ticket's first BQA Channel |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
-| `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
+| `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext`; it snapshots the kind's default task type and conversation continuity onto a received Trigger |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
 | `src/app/cards.ts` | Compact cards of Triggers, Tickets, Threads and Decisions for models, the closed set of ticket card states `TICKET_STATES`, and `textPage` |
 | `src/app/resources.ts` | `RESOURCES` and `readResource`: what `orchestrator_read` reads, for each role |
@@ -366,9 +369,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
-| `src/sources/kind.ts` | The `SourceKind` protocol |
-| `src/sources/conversation.ts` | The per-Source conversation mode: `off` keeps every message its own conversation, `thread` continues one conversation per Thread, and `CONVERSATION_DEFAULTS` names each built-in kind's default |
-| `src/sources/registry.ts` | `SourceRegistry` |
+| `src/sources/kind.ts` | The `SourceKind` protocol, including `authenticates` for a Source that admits its senders itself |
+| `src/sources/conversation.ts` | The per-Source conversation mode: `off` keeps every message its own conversation, `thread` continues one conversation per Thread, and `CONVERSATION_DEFAULTS` names each built-in kind's default; `conversationField` is the shared form field and `continuityOf` maps a mode to a Trigger's `continuity` |
+| `src/sources/registry.ts` | `SourceRegistry`, which also answers `SourceScope.authenticates` for the Policy |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
@@ -385,7 +388,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/sources/schedule.ts` | The Schedule kind and plugin entry, exported as `./schedule-watch`: interval tasks declared in settings, each able to feed superagent |
 | `src/sources/ume.ts` | The UME kind and plugin entry, exported as `./ume-watch`: it reads UME message-capture's exported `tasks.json` and turns changed conversations into Triggers, without reading the client store or sending messages |
-| `src/sources/bqa.ts` | The BQA kind and plugin entry, exported as `./bqa-watch`: question Triggers, the answer Channel that calls BQA's internal endpoint, its task type and health |
+| `src/sources/bqa.ts` | The BQA kind and plugin entry, exported as `./bqa-watch`: question Triggers with their conversation continuity, the answer Channel that calls BQA's internal endpoint, its task type, health, and `authenticates` |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
@@ -415,9 +418,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Test | Covers |
 | --- | --- |
-| `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
+| `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, the single-host rule of `per-thread` conversations, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
-| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations, each task type's execution profile resolution, and assessment outcomes with the task type each resolves |
+| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation including self-authenticating Sources, the Policy version, settings migrations, each task type's execution profile resolution, and assessment outcomes with the task type each resolves |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
@@ -434,7 +437,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/batches.spec.ts` | The Batches queue: one delivery per window, the batch message's cards and `candidateDelivered`, the per-minute limit and restart recovery |
 | `tests/ume.spec.ts` | The UME Source: the export's conversations as Triggers, its watermark, and the plugin entry |
-| `tests/bqa.spec.ts` | The BQA Source: question Triggers, the inbound routes with their secret, `requestId` idempotency, the direct reply and the answer callback |
+| `tests/bqa.spec.ts` | The BQA Source: question Triggers with their conversation continuity, the inbound routes with their secret, `requestId` idempotency, continuous conversations (one host Ticket and Session, the per-question routing note, a disabled Source resuming nothing), the three-level answer routing, the direct reply and the answer callback |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
@@ -450,7 +453,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
-| `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, the refusals of the pause, a sync and a block, and a task type's blocked commands rewriting the deployment-wide shims |
+| `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, the refusals of the pause, a sync and a block, a task type's blocked commands rewriting the deployment-wide shims, and a stored BQA source config from before the conversation setting loading as `off` |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to, and the settings history of task types and the worker engine |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
@@ -461,7 +464,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment including the shims of the deployment-wide blocked-command union, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
-| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
+| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route; the Source settings' continuous-conversation control among its kind's fields |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
 | `tests/panel-directory-format.spec.tsx` | The Execution settings accept Windows absolute Ticket directories where the form previously demanded a leading slash |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
