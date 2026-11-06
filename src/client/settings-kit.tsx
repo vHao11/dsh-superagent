@@ -148,15 +148,18 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
 type HistoryChange = NonNullable<HistoryView['items'][number]['changes']>[number]
 function changeText(t: T, change: HistoryChange, sources: SourceView[]): string {
   const source = sources.find(item => item.id === change.source)
+  const taskTypeField = change.code === 'taskTypeChanged' ? change.field : undefined
   const field = (change.part ? source?.policy?.fields : source?.fields)?.find(item => item.key === change.field)
   const shown = (value: unknown) => value === undefined || value === null || value === '' ? t('unsetValue') : typeof value === 'boolean'
     ? t(value ? 'yes' : 'no')
-    : change.code === 'mode' ? valueLabel(t, 'mode', String(value)) : String(value)
+    : change.code === 'mode' ? valueLabel(t, 'mode', String(value))
+    : taskTypeField === 'engine' ? valueLabel(t, 'engine', String(value))
+    : taskTypeField === 'directoryMode' ? valueLabel(t, 'directoryMode', String(value)) : String(value)
   return t(`change.${change.code}`,
     { items: (change.items ?? []).map(item => source?.labels[item] ?? item).join(t('listSeparator')),
     from: shown(change.from), to: shown(change.to), name: change.name ?? '', source: source ? localized(t, source.title)
       : change.source ?? '',
-    field: field ? localized(t, field.label) : change.field ?? '' })
+    field: field ? localized(t, field.label) : taskTypeField ? valueLabel(t, 'taskTypeField', taskTypeField) : change.field ?? '' })
 }
 /**
  * Collapsible revision history for the specified settings blocks, optionally including all Policy-changing saves.
