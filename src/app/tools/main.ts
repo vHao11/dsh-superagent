@@ -171,7 +171,7 @@ const OperatorTaskSchema = z.object({
   request: z.string().trim().min(1).max(20000).describe('The person\'s request, copied as written; no added plan, criteria or instructions.'),
   worktree_name: WorktreeNameSchema.optional(),
   taskType: z.string().trim().max(64).optional().describe('The id of one task type from the Task types prompt section. Required when task types are configured: work cannot proceed unclassified.'),
-  engine: z.enum(ENGINE_NAMES).optional().describe('claude-code for the native Claude Code agent, dsh for DSH\'s agent; omit for the task type\'s engine, then the executor fallback.'),
+  engine: z.enum(ENGINE_NAMES).optional().describe('dsh for DSH\'s agent, claude-code for the native Claude Code agent, opencode for the native opencode ACP agent; omit for the task type\'s engine, then the executor fallback.'),
 }).strict()
 /**
  * `orchestrator_task_start`: start tasks the person asked for directly in this Session, without a Source candidate. Each item
