@@ -3,8 +3,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
+import { BqaConfigSchema, bqaKind } from '../src/sources/bqa.ts'
+import { SourceRegistry } from '../src/sources/registry.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
@@ -15,6 +18,18 @@ function deferred<T>() {
   return { promise, resolve }
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
+
+it('T6: loads a source:bqa config saved before the conversation setting with the off default, and round-trips it', () => {
+  const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { bqa: { enabled: true,
+    config: { autoAccept: 'explicit', directReply: true, bqaBaseUrl: 'http://127.0.0.1:8765', pollSeconds: 30 } } } }))
+  sources.register(bqaKind)
+  const loaded = sources.instance('bqa')!
+  expect(loaded.enabled).toBe(true)
+  expect(BqaConfigSchema.parse(loaded.config)).toMatchObject({ conversation: 'off', autoAccept: 'explicit' })
+  // A save through the generic source form persists the field and keeps the rest.
+  const saved = BqaConfigSchema.parse(sources.validate('bqa', { enabled: true, config: { ...loaded.config, conversation: 'thread' } }).config)
+  expect(saved).toMatchObject({ conversation: 'thread', directReply: true, pollSeconds: 30 })
+})
 
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
   h = await startRuntime()
