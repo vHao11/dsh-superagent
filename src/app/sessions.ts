@@ -10,8 +10,8 @@ import { key, liveTicket, type EngineName, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import { BQA_MCP_SERVER, BQA_MCP_TOOL_NAMES } from '../sources/bqa.ts'
 import { attachClaudeCode } from '../executor/claude-code.ts'
-import { OPENCODE_UNAVAILABLE } from '../executor/opencode.ts'
-import { claudeSettingsForTicket } from './executor-profile.ts'
+import { attachOpencode } from '../executor/opencode.ts'
+import { claudeSettingsForTicket, opencodeSettingsForTicket } from './executor-profile.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -158,8 +158,6 @@ export class Sessions {
     const settings = this.host.store.settings()
     const ticket = role === 'worker' ? this.ticketOfId(id) : undefined
     const engine: EngineName = role === 'worker' ? ticket?.execution?.engine ?? settings.executor.engine : 'dsh'
-    // An opencode worker needs the W2 ACP driver; fail loudly instead of creating a Session that would silently run the DSH model loop.
-    if (engine === 'opencode') throw new Error(OPENCODE_UNAVAILABLE)
     const readOnly = role === 'worker' && this.readOnlyOf(ticket)
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     let created = false
@@ -315,6 +313,12 @@ export class Sessions {
       context: this.ctx, agent, ticket, store: this.host.store,
       // The Ticket's snapshotted Claude Code profile, so the driver reads type-level parameters over the global fallbacks.
       settings: () => claudeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
+      environment: () => this.host.environment(ticket),
+    }))
+    // A native opencode worker runs its own ACP loop; mount it before the asynchronous setup so its step owns the turn.
+    if (!master && ticket && this.engineOf(ticket) === 'opencode') binding.disposers.push(attachOpencode({
+      context: this.ctx, agent, ticket, store: this.host.store,
+      settings: () => opencodeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
       environment: () => this.host.environment(ticket),
     }))
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())

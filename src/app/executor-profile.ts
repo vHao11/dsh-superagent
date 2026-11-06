@@ -51,6 +51,17 @@ export function claudeSettingsForTicket(settings: Settings, ticket: Pick<Ticket,
     claudeApproval: claude.approval, claudeEffort: claude.effort, claudeUltracode: claude.ultracode }
 }
 /**
+ * The executor settings an opencode worker reads: the global executor block with the Ticket's snapshotted opencode
+ * parameters in place of the fallbacks, so the native ACP driver reads a type's parameters without a second resolution path,
+ * and a later settings edit does not move an in-flight Ticket.
+ */
+export function opencodeSettingsForTicket(settings: Settings, ticket: Pick<Ticket, 'execution'>): Settings['executor'] {
+  const opencode = ticket.execution?.engineOptions?.opencode
+    ?? executorProfile(settings, taskTypeOf(settings, ticket.execution?.taskType)).opencode
+  return { ...settings.executor, opencodeModel: opencode.model, opencodeAgent: opencode.agent, opencodeApproval: opencode.approval,
+    opencodePermissionPreset: opencode.permissionPreset, opencodePermissionRules: opencode.permissionRules }
+}
+/**
  * The commands the deployment enforces, fail-closed: the executor's list plus every task type's declared list, deduplicated
  * in order. A DSH worker shares the host process's PATH, so a command declared by one type's list fails for every type.
  */
