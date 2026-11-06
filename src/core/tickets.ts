@@ -389,6 +389,19 @@ export class Tickets extends EnginePart {
     this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
   }
   /**
+   * Attach `note` to a Trigger Input that still waits for the worker, such as the retrieval parameters a Source routed with it
+   * to this Ticket; an Input the worker already read keeps its message unchanged. The note becomes the Input's routing note.
+   * @throws UserError when the ticket is unknown.
+   */
+  noteInput(ticketId: string, triggerId: string, note: string): void {
+    const ticket = this.require(ticketId)
+    const input = ticket.inputs.findLast(input => input.kind === 'trigger' && input.triggerId === triggerId)
+    if (!input || input.kind !== 'trigger' || input.readAt) return
+    input.note = note
+    ticket.updatedAt = this.now()
+    this.repo.tickets.save(ticket)
+  }
+  /**
    * Give an open ticket's Executor a fact as a note Input, such as what another ticket found; it grants nothing (see `TicketInput`).
    * @throws UserError when the ticket is unknown or has ended.
    */

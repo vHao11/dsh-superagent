@@ -402,7 +402,11 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
         const admission = admissionOf(settings, source ?? '', current?.listened ? current.row : undefined, now)
         if (STRENGTH[admission] < STRENGTH[mandate.strength]) return false
         if (mandate.strength === 'explicit') return true
-      } else if (basis.via !== 'bot' && !allowedSender(settings, mandate.actor)) return false
+      } else if (basis.via !== 'bot' && !allowedSender(settings, mandate.actor)) {
+        // A Source that authenticates its senders itself vouches for their explicit requests; it only has to keep listening
+        // (checked above). The BQA shared secret is the only such Source, so its questions need no allow-list entry.
+        if (!(basis.via === 'addressed' && mandate.strength === 'explicit' && source && sources.authenticates?.(source) === true)) return false
+      }
       // Observed/inferred Mandates hold only while auto mode is active and all matched rules remain enabled.
       if ((basis.via === 'admission' || basis.via === 'listed' || basis.via === 'bot') && basis.observation) return mode === 'auto' && rulesOn(basis.rules)
       return true

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsSchema, TaskTypeSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender,
   anyoneAllowed, unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
-import type { MandateBasis } from '../src/core/index.ts'
+import type { Mandate, MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { deploymentBlockedCommands, executorProfile, opencodeSettingsForTicket } from '../src/app/executor-profile.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
+import { bqaKind } from '../src/sources/bqa.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
@@ -229,6 +230,34 @@ describe('revalidate and version', () => {
     expect(setup({ ...base, sources: { feishu: feishuSource({ chats: [], directMessages: false }) } }).version).toBe(version)
     expect(setup({ ...base, eval: { ...base.eval, mode: 'off' } }).version).not.toBe(version)
     expect(setup({ ...base, policy: { ...base.policy, sources: { ...base.policy.sources, github: { allowed: [], admission: {} } } } }).version).not.toBe(version)
+  })
+})
+describe('revalidating a self-authenticating Source', () => {
+  function bqaSetup(enabled = true) {
+    const settings = SettingsSchema.parse({ sources: { bqa: { enabled, config: {} } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register(bqaKind)
+    return { sources, policy: settingsPolicy(settings, sources) }
+  }
+  const mandate: Mandate = { strength: 'explicit', policyVersion: 'v', basis: { via: 'addressed', source: 'bqa', addressed: 'direct' },
+    actor: { source: 'bqa', id: 'user-1' }, scope: '' }
+  it('T5: resumes an addressed Mandate without the allow-list while the Source listens, and refuses it once disabled or uninstalled', () => {
+    const listening = bqaSetup()
+    expect(listening.sources.authenticates('bqa')).toBe(true)
+    expect(listening.policy.revalidate(mandate)).toBe(true)
+    // The Source's own authentication is the only admission path: disabled, it no longer vouches for anyone.
+    const disabled = bqaSetup(false)
+    expect(disabled.sources.authenticates('bqa')).toBe(false)
+    expect(disabled.policy.revalidate(mandate)).toBe(false)
+    // A Source whose plugin is not installed authenticates nothing.
+    const bare = new SourceRegistry(() => SettingsSchema.parse({ sources: { bqa: { enabled: true, config: {} } } }))
+    expect(bare.authenticates('bqa')).toBe(false)
+    expect(settingsPolicy(SettingsSchema.parse({ sources: { bqa: { enabled: true, config: {} } } }), bare).revalidate(mandate)).toBe(false)
+    // Every other Source keeps the allow-list rule.
+    const feishuMandate: Mandate = { strength: 'explicit', policyVersion: 'v', scope: '',
+      basis: { via: 'addressed', source: 'feishu', scope: { chatId: CHAT, direct: false }, addressed: 'mention' }, actor: { source: 'feishu', id: 'ou_guest' } }
+    expect(policy.revalidate(feishuMandate)).toBe(false)
+    expect(policy.revalidate({ ...feishuMandate, actor: { source: 'feishu', id: MEMBER } })).toBe(true)
   })
 })
 describe('settings migration', () => {
