@@ -330,7 +330,7 @@ it('words task types added, edited and removed, and a global engine change, in t
   }
   save({ engine: 'claude-code', taskTypes: [type()] })
   save({ engine: 'dsh', taskTypes: [type({ engine: 'claude-code', prepare: 'npm ci', blockedCommands: ['type-cli'],
-    claude: { model: 'claude-x', permissionMode: null, approval: null, effort: null, ultracode: null } })] })
+    claude: { permissionMode: null, approval: null, ultracode: null } })] })
   save({ taskTypes: [] })
   const revision = store.get(KV.settings.revision)!
   const changes = (value: number) => policyHistory(store, host.sources, 'v').items.find(item => item.revision === value)!.changes
@@ -341,7 +341,7 @@ it('words task types added, edited and removed, and a global engine change, in t
   expect(changes(revision - 1)).toEqual([{ code: 'engine', from: 'claude-code', to: 'dsh' },
     { code: 'taskTypeChanged', name: 'Native work', field: 'engine', from: '', to: 'claude-code' },
     { code: 'taskTypeChanged', name: 'Native work', field: 'claude', from: '',
-      to: '{"model":"claude-x","permissionMode":null,"approval":null,"effort":null,"ultracode":null}' },
+      to: '{"permissionMode":null,"approval":null,"ultracode":null}' },
     { code: 'taskTypeChanged', name: 'Native work', field: 'prepare', from: '', to: 'npm ci' },
     { code: 'taskTypeChanged', name: 'Native work', field: 'blockedCommands', from: '', to: 'type-cli' }])
   // Removing it leaves the history a removal, not a silent gap.

@@ -70,8 +70,8 @@ type TaskTypeView = ExecutorView['taskTypes'][number]
 type TaskTypeClaude = NonNullable<TaskTypeView['claude']>
 type TaskTypeOpencode = NonNullable<TaskTypeView['opencode']>
 type EngineName = NonNullable<TaskTypeView['engine']>
-type ExecutorFallback = Pick<ExecutorView, 'engine' | 'prepare' | 'blockedCommands' | 'claudeModel' | 'claudePermissionMode'
-  | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode' | 'opencodeModel' | 'opencodeAgent' | 'opencodeApproval'
+type ExecutorFallback = Pick<ExecutorView, 'engine' | 'prepare' | 'blockedCommands'
+  | 'claudePermissionMode' | 'claudeApproval' | 'claudeUltracode' | 'opencodeAgent' | 'opencodeApproval'
   | 'opencodePermissionPreset'>
 /**
  * The task type as the form edits it: `blockedCommands` keeps the raw text (separators included) until save, where `null`
@@ -82,14 +82,13 @@ type ExecutorDraft = Omit<ExecutorView, 'maxWorkers' | 'taskTypes'> & { maxWorke
 const ENGINES: readonly EngineName[] = ['dsh', 'claude-code', 'opencode']
 const CLAUDE_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const
 const CLAUDE_APPROVALS = ['ask', 'approve', 'deny'] as const
-const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
-const CLAUDE_INHERIT: TaskTypeClaude = { model: null, permissionMode: null, approval: null, effort: null, ultracode: null }
+const CLAUDE_INHERIT: TaskTypeClaude = { permissionMode: null, approval: null, ultracode: null }
 const claudeOf = (type: TaskTypeDraft): TaskTypeClaude => ({ ...CLAUDE_INHERIT, ...type.claude })
 const OPENCODE_APPROVALS = ['ask', 'approve', 'deny', 'smart'] as const
 const OPENCODE_PRESETS = ['smart', 'safe', 'read-only', 'full', 'custom'] as const
 // The hidden `permissionRules` stays API-only (Phase 2); an inherited copy survives edits because every control fills the
 // object from this value and only replaces its own field.
-const OPENCODE_INHERIT: TaskTypeOpencode = { model: null, agent: null, approval: null, permissionPreset: null, permissionRules: null }
+const OPENCODE_INHERIT: TaskTypeOpencode = { agent: null, approval: null, permissionPreset: null, permissionRules: null }
 const opencodeOf = (type: TaskTypeDraft): TaskTypeOpencode => ({ ...OPENCODE_INHERIT, ...type.opencode })
 /** The raw text of a type's blocked commands; a draft from an older version may still hold the saved array. */
 const blockedText = (value: TaskTypeDraft['blockedCommands'] | undefined): string =>
@@ -232,25 +231,24 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
         </div>
         <Field label={t('taskTypeEngine')} hint={t('taskTypeEngineHint')}>
           <select className="dt-select" value={type.engine ?? ''}
-            onChange={event => patch(index, { engine: event.target.value ? event.target.value as EngineName : null })}>
+            onChange={event => patch(index, { engine: event.target.value ? event.target.value as EngineName : null,
+              // A model route belongs to one engine, so switching engines clears the route for the new engine's picker.
+              model: null })}>
             <option value="">{t('taskTypeEngineInherit', { engine: t(`engine.${executor.engine}`) })}</option>
             {ENGINES.map(name => <option key={name} value={name}>{t(`engine.${name}`)}</option>)}
           </select>
         </Field>
         <div className="dt-field">
           <span className="dt-field-head"><label>{t('taskTypeModel')}</label><InfoTip text={t('taskTypeModelHint')} /></span>
-          <ModelField value={type.model} inherit={t('taskTypeModelInherit')} onChange={model => patch(index, { model })} />
+          <ModelField value={type.model} engine={engine} onChange={model => patch(index, { model })}
+            inherit={engine === executor.engine ? t('taskTypeModelInherit')
+              : t('taskTypeModelInheritOther', { engine: t(`engine.${executor.engine}`) })} />
         </div>
         <Field label={t('taskTypeInstructions')}>
           <textarea className="dt-textarea dt-mono" rows={3} maxLength={4000} value={type.instructions}
             onChange={event => patch(index, { instructions: event.target.value })} />
         </Field>
         {engine === 'claude-code' && <Section title={t('taskTypeClaude')} hint={t('taskTypeClaudeHint')}>
-          <Field label={t('taskTypeClaudeModel')} hint={t('taskTypeClaudeModelHint')}>
-            <Input className="dt-mono" value={claude.model ?? ''} spellCheck={false}
-              placeholder={inheritValue(executor.claudeModel || t('unsetValue'))}
-              onChange={event => patchClaude(index, { model: event.target.value.trim() ? event.target.value : null })} />
-          </Field>
           <Field label={t('taskTypeClaudePermissionMode')} hint={t('taskTypeClaudePermissionModeHint')}>
             <select className="dt-select" value={claude.permissionMode ?? ''}
               onChange={event => patchClaude(index, { permissionMode: event.target.value
@@ -267,16 +265,6 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
               {CLAUDE_APPROVALS.map(choice => <option key={choice} value={choice}>{t(`claudeApproval.${choice}`)}</option>)}
             </select>
           </Field>
-          <Field label={t('taskTypeClaudeEffort')} hint={t('taskTypeClaudeEffortHint')}>
-            <select className="dt-select" value={claude.effort === null ? '' : claude.effort === '' ? 'none' : claude.effort}
-              onChange={event => patchClaude(index, { effort: event.target.value === '' ? null
-                : event.target.value === 'none' ? '' : event.target.value as TaskTypeClaude['effort'] })}>
-              <option value="">{inheritValue(executor.claudeEffort ? valueLabel(t, 'claudeEffort', executor.claudeEffort)
-                : t('claudeEffort.default'))}</option>
-              <option value="none">{t('claudeEffort.default')}</option>
-              {CLAUDE_EFFORTS.map(level => <option key={level} value={level}>{t(`claudeEffort.${level}`)}</option>)}
-            </select>
-          </Field>
           <Field label={t('taskTypeClaudeUltracode')} hint={t('taskTypeClaudeUltracodeHint')}>
             <select className="dt-select" value={claude.ultracode === null ? '' : claude.ultracode ? 'on' : 'off'}
               onChange={event => patchClaude(index, { ultracode: event.target.value === '' ? null : event.target.value === 'on' })}>
@@ -287,11 +275,6 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
           </Field>
         </Section>}
         {engine === 'opencode' && <Section title={t('taskTypeOpencode')} hint={t('taskTypeOpencodeHint')}>
-          <Field label={t('taskTypeOpencodeModel')} hint={t('taskTypeOpencodeModelHint')}>
-            <Input className="dt-mono" value={opencode.model ?? ''} spellCheck={false}
-              placeholder={inheritValue(executor.opencodeModel || t('unsetValue'))}
-              onChange={event => patchOpencode(index, { model: event.target.value.trim() ? event.target.value : null })} />
-          </Field>
           <Field label={t('taskTypeOpencodeAgent')} hint={t('taskTypeOpencodeAgentHint')}>
             <Input className="dt-mono" value={opencode.agent ?? ''} spellCheck={false}
               placeholder={inheritValue(executor.opencodeAgent || t('unsetValue'))}
@@ -395,7 +378,7 @@ export function ExecutionSettings() {
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
           </Field>
-          <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField value={value.model}
+          <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField value={value.model} engine={value.engine}
             onChange={model => edit({ model })} /><Hint>{t('executorModelInheritHint')}</Hint></Section>
           {/* The legacy executor directory applies only before any task type exists; prepare and blocked commands are API-only now. */}
           {value.taskTypes.length === 0 && <>

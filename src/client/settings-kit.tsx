@@ -2,9 +2,10 @@
 import { cloneElement, createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement,
   type ReactNode } from 'react'
 import type { ApiResponse } from '../app/api.ts'
+import type { EngineName } from '../core/index.ts'
 import type { FieldSpec, Localized } from '../sources/kind.ts'
 import { usePoll, type HistoryView, type Settings, type SettingsView, type SourceView } from './api.ts'
-import { Button, DisclosureRow, Icon, InfoTip, Input, SegmentedControl, Switch } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, SegmentedControl, StateDot, Switch } from './controls.tsx'
 import { useDraft } from './draft.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { settingsRoute } from './route.ts'
@@ -69,18 +70,44 @@ export function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
-type ModelGroup = ApiResponse<'GET models'>['groups'][number]
 /**
  * The model as three single-line dropdowns, like every other select: the Provider, the models that Provider lists, and
- * the reasoning efforts the chosen model offers. A select always lists its whole catalog, so a saved route never hides
- * the other Providers; empty means inherit, and a saved value outside the catalog stays selectable so a custom route
+ * the reasoning efforts the chosen model offers. The catalog is the chosen engine's, so switching the engine of a task type
+ * asks that engine which routes it supports (with a spinner while the query runs and a notification for its success or
+ * failure) and refills the three selects from the answer. A select always lists its whole catalog, so a saved route never
+ * hides the other Providers; empty means inherit, and a saved value outside the catalog stays selectable so a custom route
  * survives a catalog change. When the catalog is unavailable the same fields fall back to free text.
  */
-export function ModelField({ value, onChange, inherit }: { value: RoleModel; onChange: (next: RoleModel) => void; inherit?: string }) {
-  const { t, call } = usePanel()
-  const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
+export function ModelField({ value, onChange, inherit, engine = 'dsh' }: {
+  value: RoleModel; onChange: (next: RoleModel) => void; inherit?: string; engine?: EngineName
+}) {
+  const { t, call, notify } = usePanel()
+  const [catalog, setCatalog] = useState<ApiResponse<'GET engine-models'>>()
   const [error, setError] = useState<string>()
-  useEffect(() => { call('GET models').then(setCatalog, failure => setError(errorText(failure))) }, [call])
+  const [loading, setLoading] = useState(true)
+  const engineName = t(`engine.${engine}`)
+  // The first catalog load is part of opening the page; only a later one (the user switching the engine) is announced.
+  const first = useRef(true), asked = useRef(0)
+  useEffect(() => {
+    const id = ++asked.current
+    const announce = !first.current
+    first.current = false
+    setLoading(true); setError(undefined)
+    call('GET engine-models', { query: { engine } }).then(result => {
+      if (asked.current !== id) return
+      setCatalog(result); setLoading(false)
+      const models = result.groups.reduce((total, group) => total + group.models.length, 0)
+      if (result.error) {
+        setError(result.error)
+        if (announce) notify(t('engineModelsFailed', { engine: engineName, error: result.error }))
+      } else if (announce) notify(t('engineModelsLoaded', { engine: engineName, providers: result.groups.length, models }))
+    }, failure => {
+      if (asked.current !== id) return
+      const message = errorText(failure)
+      setCatalog(undefined); setError(message); setLoading(false)
+      if (announce) notify(t('engineModelsFailed', { engine: engineName, error: message }))
+    })
+  }, [call, engine, engineName, notify, t])
   const current = { provider: value?.provider ?? '', model: value?.model ?? '', effort: value?.reasoningEffort ?? '' }
   const inheritLabel = inherit ?? t('modelInherit')
   const set = (next: Partial<typeof current>) => {
@@ -90,7 +117,7 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
   const groups = catalog?.groups ?? []
   const listed = groups.find(group => group.id === current.provider.trim())?.models ?? []
   const efforts = listed.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []
-  const keepsEffort = (models: ModelGroup['models'], model: string): boolean =>
+  const keepsEffort = (models: readonly { id: string; reasoning?: { efforts: readonly { id: string }[] } }[], model: string): boolean =>
     (models.find(item => item.id === model)?.reasoning?.efforts ?? []).some(item => item.id === current.effort)
   /** Provider and model are one route: another Provider's model is not kept, and a Provider with models takes its first. */
   const chooseProvider = (provider: string) => {
@@ -102,10 +129,17 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
   const chooseModel = (model: string) => set({ model, effort: keepsEffort(listed, model) ? current.effort : '' })
   const fallback = catalog?.default
   const unavailable = !!error || (catalog !== undefined && !groups.length)
+  const modelCount = groups.reduce((total, group) => total + group.models.length, 0)
   return <div className="dt-model">
-    <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
-      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
-    {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
+    {loading
+      ? <Hint><StateDot state="ongoing" /> {t('engineModelsLoading', { engine: engineName })}</Hint>
+      : error
+        ? <p className="dt-error">{t('engineModelsError', { engine: engineName, error })}</p>
+        : <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
+          ? ` · ${fallback.reasoningEffort}` : ''}` }) : engine === 'dsh' ? t('defaultModelUnavailable')
+          : t('engineModelsCount', { engine: engineName, providers: groups.length, models: modelCount })}</Hint>}
+    {catalog?.failures.map(failure => <p key={failure.id} className="dt-error">{t('modelCatalogProviderError', { provider: failure.name || failure.id,
+      error: failure.message })}</p>)}
     {unavailable ? <div className="dt-grid3">
       <Field label={t('modelProvider')}><Input spellCheck={false} placeholder={inheritLabel} value={current.provider}
         onChange={event => set({ provider: event.target.value })} /></Field>
@@ -115,7 +149,7 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
         onChange={event => set({ effort: event.target.value })} /></Field>
     </div> : <div className="dt-grid3">
       <Field label={t('modelProvider')}>
-        <select className="dt-select" value={current.provider} disabled={!groups.length}
+        <select className="dt-select" value={current.provider} disabled={loading || !groups.length}
           onChange={event => chooseProvider(event.target.value)}>
           <option value="">{inheritLabel}</option>
           {groups.map(group => <option key={group.id} value={group.id}>{group.name || group.id}</option>)}
@@ -124,7 +158,7 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
         </select>
       </Field>
       <Field label={t('modelName')}>
-        <select className="dt-select" value={current.model} disabled={!current.provider}
+        <select className="dt-select" value={current.model} disabled={loading || !current.provider}
           onChange={event => chooseModel(event.target.value)}>
           {!current.model && <option value="">{current.provider ? t('modelChoose') : inheritLabel}</option>}
           {listed.map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
@@ -133,7 +167,7 @@ export function ModelField({ value, onChange, inherit }: { value: RoleModel; onC
         </select>
       </Field>
       <Field label={t('modelEffort')}>
-        <select className="dt-select" value={current.effort} disabled={!efforts.length && !current.effort}
+        <select className="dt-select" value={current.effort} disabled={loading || (!efforts.length && !current.effort)}
           onChange={event => set({ effort: event.target.value })}>
           <option value="">{t('modelEffortDefault')}</option>
           {efforts.map(effort => <option key={effort.id} value={effort.id}>{effort.name || effort.id}</option>)}

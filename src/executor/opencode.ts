@@ -21,6 +21,7 @@ import type { EpochHeader, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { EngineName, OpencodeApproval, Ticket } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import type { Settings } from '../policy.ts'
+import type { RoleModel } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import {
   ASK_TOOL, ASK_TOOL_SCHEMA, BRIDGE_PROMPT, CardResources, INTERRUPT_WAIT_MS, abortError, asString, delay, isRecord, jsonArguments,
@@ -82,6 +83,10 @@ export interface OpencodeOptions {
   readonly ticket: Ticket
   readonly store: Pick<Store, 'get' | 'set'>
   readonly settings: () => Settings['executor']
+  /** The model and reasoning effort this worker runs with, from the Ticket's snapshot; null keeps opencode's own configuration. */
+  readonly model?: () => RoleModel | null
+  /** The ticket's worker instructions (the same text a DSH worker's system prompt carries), sent at the head of the first prompt. */
+  readonly instructions?: () => string
   readonly logger: Context['logger']
   readonly lifetime: AbortSignal
   /** The execution variables of the ticket, passed to the native process as `DSH_SUPERAGENT_*` environment. */
@@ -328,6 +333,8 @@ export class OpencodeDriver {
   private readonly ticket: Ticket
   private readonly store: Pick<Store, 'get' | 'set'>
   private readonly settings: () => Settings['executor']
+  private readonly configuredModel: () => RoleModel | null
+  private readonly workerInstructions?: () => string
   private readonly logger: Context['logger']
   private readonly environment?: () => { key: string; value: string }[]
   private readonly spawnProcess: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcessWithoutNullStreams
@@ -384,6 +391,8 @@ export class OpencodeDriver {
     this.ticket = options.ticket
     this.store = options.store
     this.settings = options.settings
+    this.configuredModel = options.model ?? (() => null)
+    this.workerInstructions = options.instructions
     this.logger = options.logger
     this.environment = options.environment
     this.resources = new CardResources(options.agent, options.logger, 'opencode', 'opencode-read')
@@ -440,11 +449,13 @@ export class OpencodeDriver {
           }
         }
         if (!prompt.length) return { kind: 'completed' }
-        // opencode has no `--append-system-prompt`: the bridge rules ride at the head of a fresh session's first prompt,
-        // where they stay in that session's context for every later turn.
+        // opencode has no `--append-system-prompt`: the bridge rules and the worker instructions ride at the head of a
+        // fresh session's first prompt, where they stay in that session's context for every later turn. The instructions
+        // are the same policy, mandate and task-type text a DSH worker reads in its system prompt.
         const first = prompt[0]
         if (first && !this.bridgeSent) {
-          first.text = `${BRIDGE_PROMPT}\n\n${first.text}`
+          const instructions = this.workerInstructions?.() ?? ''
+          first.text = [BRIDGE_PROMPT, instructions, first.text].filter(Boolean).join('\n\n')
           this.bridgeSent = true
         }
         const result = await this.runTurn(turn, step, signal, prompt)
@@ -618,21 +629,23 @@ export class OpencodeDriver {
     this.rememberSession()
   }
 
-  /** Apply the Ticket's snapshotted opencode parameters: the model first, then the agent (mode) that uses it. */
+  /** Apply the Ticket's snapshotted opencode parameters: the shared execution model first, then the agent (mode) that uses it. */
   private async applyConfig(signal: AbortSignal): Promise<void> {
     const settings = this.readSettings()
-    const model = settings.opencodeModel.trim()
-    if (model && currentValueOf(this.config, 'model') !== model) {
+    // opencode names a model `provider/model`, with `#variant` for a reasoning variant; the shared model carries both parts.
+    const configured = this.modelName()
+    if (configured && currentValueOf(this.config, 'model') !== configured) {
       try {
-        const result = await this.request('session/set_config_option', { sessionId: this.sessionId, configId: 'model', value: model },
+        const result = await this.request('session/set_config_option', { sessionId: this.sessionId, configId: 'model', value: configured },
           signal, CONTROL_TIMEOUT_MS)
         const options = configOptionsOf(result)
         if (options.length) this.config = options
-        else this.setCurrent('model', model)
+        else this.setCurrent('model', configured)
         this.updateModel()
       } catch (error) {
-        throw new Error(`opencode could not use the model "${model}": ${this.describe(error)}. `
-          + 'Choose a model this machine can use (`opencode models`) or authenticate (`opencode auth login`).')
+        throw new Error(`opencode could not use the model "${configured}": ${this.describe(error)}. `
+          + 'Choose a model this machine can use in the task type\'s model picker (the same provider/model opencode lists) '
+          + 'or authenticate it (`opencode auth login`).')
       }
     }
     const agent = settings.opencodeAgent.trim()
@@ -660,7 +673,10 @@ export class OpencodeDriver {
       return error instanceof Error ? error : new Error(message)
     }
     if (error instanceof AcpError && (error.code === -32000 || /authentication|free usage limit|provider/i.test(error.message))) {
-      return new Error(`${message}. ${SETUP_HINT}`)
+      const model = this.modelName()
+      const guidance = model ? `The ticket's model is "${model}": choose one this machine can use in the task type's model picker.`
+        : 'No model is configured for this ticket: choose one in the task type\'s model picker so opencode does not fall back to a model this machine cannot authenticate.'
+      return new Error(`${message}. ${SETUP_HINT} ${guidance}`)
     }
     return error instanceof Error ? error : new Error(message)
   }
@@ -673,6 +689,12 @@ export class OpencodeDriver {
   /** Update the model the projected assistant messages name from the session's current config. */
   private updateModel(): void {
     this.model = currentValueOf(this.config, 'model') ?? 'opencode'
+  }
+
+  /** The opencode model value the shared execution model names: `provider/model`, with `#effort` when a reasoning effort is set. */
+  private modelName(): string {
+    const model = this.configuredModel()
+    return model ? `${model.provider}/${model.model}${model.reasoningEffort ? `#${model.reasoningEffort}` : ''}` : ''
   }
 
   /** Remember one session config value the response did not echo (a `set_mode`, which answers `{}`). */

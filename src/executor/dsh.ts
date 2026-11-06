@@ -190,10 +190,9 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   // before the type and global fallbacks (plan §5.5), while the claude parameters stay available for a later retry.
   const claude = profile.claude
   const opencode = profile.opencode
-  const snapshot = { engine, engineSource, prepare: profile.prepare, blockedCommands: profile.blockedCommands,
-    claude: { model: claude.model, permissionMode: claude.permissionMode, approval: claude.approval, effort: claude.effort,
-      ultracode: claude.ultracode },
-    ...(engine === 'opencode' ? { engineOptions: { opencode: { model: opencode.model, agent: opencode.agent, approval: opencode.approval,
+  const snapshot = { engine, engineSource, model: profile.model, prepare: profile.prepare, blockedCommands: profile.blockedCommands,
+    claude: { permissionMode: claude.permissionMode, approval: claude.approval, ultracode: claude.ultracode },
+    ...(engine === 'opencode' ? { engineOptions: { opencode: { agent: opencode.agent, approval: opencode.approval,
       permissionPreset: opencode.permissionPreset, permissionRules: [...opencode.permissionRules] } } } : {}) }
   // Without task types the legacy executor directory applies unchanged.
   if (choice.source === 'legacy')
@@ -568,13 +567,20 @@ export class DshExecutor implements Executor {
     const retried = ticket.assignments.at(-2)?.endedReason === 'retried' ? { note: RETRIED } : {}
     const assignmentText = ticket.execution?.assignment ?? ''
     const { text: brief, chars, read } = capped(assignmentText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/assignment`)
+    // The mandate scope carries the source request's own parameters (such as BQA's requestId). It is delivered with the
+    // first card when it adds information beyond the title and the Trigger (a source request's scope does; an operator
+    // ticket's scope is only its title), so every engine reads the same task text.
+    const scopeText = ticket.mandate.scope ?? ''
+    const scope = scopeText && !assignmentText.includes(scopeText) && scopeText !== ticket.title && scopeText !== source?.text
+      ? capped(scopeText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/scope`) : undefined
     const card = told || !source ? undefined : await this.triggerCard(ticket, source.id)
     if (!current()) return
     const batch = told ? [] : batchOf(this.host, ticket).map(batchLine)
     const text = told ? JSON.stringify({ ticket_id: ticket.id, assignment: ticket.assignments.length, ...retried })
       : JSON.stringify({ ticket_id: ticket.id, title: ticket.title, ...(brief ? { assignment: brief } : {}),
-        ...(read ? { assignment_chars: chars, assignment_read: read } : {}), ...(card ? { trigger: card } : {}),
-        ...(batch.length ? { batch } : {}), ...retried })
+        ...(read ? { assignment_chars: chars, assignment_read: read } : {}),
+        ...(scope ? { scope: scope.text, ...(scope.read ? { scope_chars: scope.chars, scope_read: scope.read } : {}) } : {}),
+        ...(card ? { trigger: card } : {}), ...(batch.length ? { batch } : {}), ...retried })
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
     await this.host.sessions.prompt(sessionId, requestId, text, 'queue',
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },

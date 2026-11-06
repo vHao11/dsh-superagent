@@ -41,6 +41,7 @@ export const USER_ERRORS = {
   panelOnlyAccounts: ['refused', 'Source fields that setup reads, such as account CLIs, can only be changed in the management panel'],
   setupComplete: ['refused', 'Setup is complete'],
   modelUnavailable: ['refused', 'The {block} model is not available: {error}'],
+  engineModelRequired: ['refused', 'The {block} must choose a model for its {engine} engine: pick one in the model picker, because the engine cannot fall back to a model this machine may not authenticate'],
   promptTooLong: ['refused', 'Prompt configuration exceeds {limit} characters'],
   promptPlaceholders: ['refused', 'The “{part}” template must keep {placeholders}, which the system fills in'],
   promptPartEmpty: ['refused', 'The “{part}” part cannot be empty; reset it to follow its built-in text'],

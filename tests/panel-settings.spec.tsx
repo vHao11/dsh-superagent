@@ -60,7 +60,7 @@ it('falls back to typing the Provider and Model when the DSH catalog cannot be r
   server.modelsFailure = 'catalog unavailable'
   at({ page: 'settings', query: { group: 'eval' } })
   await mount()
-  expect(text()).toContain(zh.modelCatalogError.replace('{error}', 'catalog unavailable'))
+  expect(text()).toContain(zh.engineModelsError.replace('{engine}', zh['engine.dsh']).replace('{error}', 'catalog unavailable'))
   expect(all('.dt-model select')).toHaveLength(0)
   const [provider, model] = all('.dt-model input')
   await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
@@ -104,12 +104,10 @@ it('saves the Eval block and the two Execution cards: global parameters, the leg
   await click('DSH_SUPERAGENT_DIR')
   expect(field<HTMLTextAreaElement>(zh.taskTypePrepare).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
   await type(field<HTMLInputElement>(zh.taskTypeBlockedCommands), 'gh-personal  gh.other')
-  // Choosing the native engine reveals the type's Claude Code parameters.
+  // Choosing the native engine reveals the type's Claude Code parameters; the model stays in the shared picker.
   await type(field<HTMLSelectElement>(zh.taskTypeEngine), 'claude-code')
-  await type(field<HTMLInputElement>(zh.taskTypeClaudeModel), 'claude-sonnet-5-5')
   await type(field<HTMLSelectElement>(zh.taskTypeClaudePermissionMode), 'acceptEdits')
   await type(field<HTMLSelectElement>(zh.taskTypeClaudeApproval), 'ask')
-  await type(field<HTMLSelectElement>(zh.taskTypeClaudeEffort), 'max')
   await type(field<HTMLSelectElement>(zh.taskTypeClaudeUltracode), 'on')
   // The fixed directory mode runs every Ticket in the type's directory and skips the prepare command, which the form says.
   expect(field<HTMLTextAreaElement>(zh.taskTypePrepare).closest('.dt-field')!.textContent).toContain(zh.prepareCommandFixed)
@@ -118,12 +116,12 @@ it('saves the Eval block and the two Execution cards: global parameters, the leg
     model: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'high' } })
   // The hidden global fallbacks were not touched; the type carries its own execution profile.
   expect(server.settings.executor.engine).toBe('dsh')
-  expect(server.settings.executor.claudeModel).toBe('')
+  expect(server.settings.executor.claudeBin).toBe('')
   expect(server.settings.executor.taskTypes).toHaveLength(1)
   expect(server.settings.executor.taskTypes[0]).toMatchObject({ id: 'custom-1', name: '集中交易类问题', directory: '/srv/work/jzjy',
     directoryMode: 'fixed', engine: 'claude-code', prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"',
-    blockedCommands: ['gh-personal', 'gh.other'], claude: { model: 'claude-sonnet-5-5', permissionMode: 'acceptEdits',
-      approval: 'ask', effort: 'max', ultracode: true } })
+    blockedCommands: ['gh-personal', 'gh.other'], claude: { permissionMode: 'acceptEdits',
+      approval: 'ask', ultracode: true } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])
 })

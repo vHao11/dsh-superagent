@@ -5,6 +5,7 @@ import type { ChildProcessWithoutNullStreams, SpawnOptions } from 'node:child_pr
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it, vi } from 'vitest'
 import { ClaudeCodeDriver, type ClaudeCodeOptions } from '../src/executor/claude-code.ts'
+import { BRIDGE_PROMPT } from '../src/executor/native-shared.ts'
 import { claudeSettingsForTicket, executorProfile } from '../src/app/executor-profile.ts'
 import { ExecutorConfigSchema, SettingsSchema } from '../src/policy.ts'
 import { KV } from '../src/kv.ts'
@@ -41,7 +42,8 @@ class FakeProcess extends EventEmitter {
 }
 interface Appended { type: string; data: Record<string, unknown>; seq: number }
 /** A host around one driver: its fake process, Session log, and question service. `real` uses the configured Claude CLI in that directory. */
-function harness(options: { answers?: unknown[]; stored?: boolean; real?: string; executor?: Record<string, unknown> } = {}) {
+function harness(options: { answers?: unknown[]; stored?: boolean; real?: string; executor?: Record<string, unknown>;
+  model?: { provider: string; model: string; reasoningEffort?: string } | null; instructions?: () => string } = {}) {
   const events: Appended[] = []
   const session = {
     append: (type: string, data: Record<string, unknown>) => { events.push({ type, data, seq: events.length }); return { seq: events.length - 1 } },
@@ -80,6 +82,8 @@ function harness(options: { answers?: unknown[]; stored?: boolean; real?: string
     },
     settings: () => settings, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, lifetime: lifetime.signal,
     ...(spawn ? { spawn } : {}),
+    ...(options.model !== undefined ? { model: () => options.model ?? null } : {}),
+    ...(options.instructions ? { instructions: options.instructions } : {}),
     environment: () => [{ key: 'DSH_SUPERAGENT_NAME', value: 'native-worker' }, { key: 'PATH', value: '/not-this' }],
   } as unknown as ClaudeCodeOptions)
   const detach = driver.attach()
@@ -219,11 +223,16 @@ describe('native Claude Code driver turns', () => {
     test.detach()
   })
 
-  it('passes the configured effort level and Ultracode switch to the process', async () => {
-    const test = harness({ stored: false, executor: { claudeEffort: 'max', claudeUltracode: true } })
+  it('passes the configured model, effort level and Ultracode switch to the process', async () => {
+    const test = harness({ stored: false, model: { provider: 'anthropic', model: 'sonnet', reasoningEffort: 'max' },
+      executor: { claudeUltracode: true }, instructions: () => 'WORKER INSTRUCTIONS: follow the ticket policy.' })
     const running = test.agent.step(decision(new AbortController().signal)) as Promise<unknown>
     await until(() => test.child.lines.some(line => line.type === 'user'))
-    expect(test.spawnArgs[0]).toEqual(expect.arrayContaining(['--effort', 'max', '--settings', '{"ultracode":true}']))
+    expect(test.spawnArgs[0]).toEqual(expect.arrayContaining(['--model', 'sonnet', '--effort', 'max', '--settings', '{"ultracode":true}']))
+    // The bridge prompt stays first, followed by the same worker instructions a DSH worker reads in its system prompt.
+    const append = test.spawnArgs[0]![test.spawnArgs[0]!.indexOf('--append-system-prompt') + 1]!
+    expect(append.startsWith(BRIDGE_PROMPT)).toBe(true)
+    expect(append).toContain('WORKER INSTRUCTIONS: follow the ticket policy.')
     test.child.send({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn' })
     await expect(running).resolves.toEqual({ kind: 'completed' })
     test.detach()
@@ -255,22 +264,23 @@ describe('native Claude Code driver turns', () => {
 })
 
 it('reads the Claude Code profile a Ticket snapshotted, or its type\'s when the Ticket predates the snapshot', () => {
-  const settings = SettingsSchema.parse({ executor: { claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny',
-    claudeEffort: 'low', claudeUltracode: true, taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.',
-      directory: 'C:/work/native', engine: 'claude-code', claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask',
-        effort: 'high', ultracode: false } }] } })
+  const settings = SettingsSchema.parse({ executor: { model: { provider: 'anthropic', model: 'sonnet' },
+    claudePermissionMode: 'plan', claudeApproval: 'deny', claudeUltracode: true,
+    taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.',
+      directory: 'C:/work/native', engine: 'claude-code', claude: { permissionMode: 'auto', approval: 'ask',
+        ultracode: false } }] } })
   const ticket = (execution: Record<string, unknown>): Ticket => ({ execution: { name: 'native-1', directory: 'C:/work/native',
     assignment: '', ...execution } }) as Ticket
   // A Ticket with a snapshot reads it, also after its type's profile changes.
-  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native', claude: { model: 'claude-snap', permissionMode: 'default',
-    approval: 'approve', effort: '', ultracode: false } }))).toMatchObject({ claudeModel: 'claude-snap', claudePermissionMode: 'default',
-      claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false })
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native', claude: { permissionMode: 'default',
+    approval: 'approve', ultracode: false } }))).toMatchObject({ claudePermissionMode: 'default',
+      claudeApproval: 'approve', claudeUltracode: false })
   // A Ticket accepted before the snapshot resolves its type's profile over the executor fallbacks.
-  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({ claudeModel: 'claude-type',
-    claudePermissionMode: 'auto', claudeApproval: 'ask', claudeEffort: 'high', claudeUltracode: false, claudeBin: '' })
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({
+    claudePermissionMode: 'auto', claudeApproval: 'ask', claudeUltracode: false, claudeBin: '' })
   // A type with no profile inherits the global fallbacks, and the executable stays machine-level.
-  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'removed' }))).toMatchObject({ claudeModel: 'claude-global',
-    claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true })
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'removed' }))).toMatchObject({
+    claudePermissionMode: 'plan', claudeApproval: 'deny', claudeUltracode: true })
   expect(executorProfile(settings, settings.executor.taskTypes[0]).claude.bin).toBe('')
 })
 

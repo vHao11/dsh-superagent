@@ -87,17 +87,14 @@ export const PermissionRuleSchema = z.object({ action: z.string().trim().min(1).
 export const OpencodeApprovalSchema = z.enum(['ask', 'approve', 'deny', 'smart'])
 /** The opencode permission preset a worker starts from; Phase 1 applies it to opencode's own global configuration. */
 export const OpencodePermissionPresetSchema = z.enum(['smart', 'safe', 'read-only', 'full', 'custom'])
-/** The Claude Code parameters a task type can set; each null field inherits the executor's fallback, and the whole object is null when the type sets none. */
+/** The Claude Code parameters a task type can set; each null field inherits the executor's fallback, and the whole object is null when the type sets none. The model and reasoning effort are the shared execution model's, engine-checked when the type runs Claude Code. */
 export const TaskTypeClaudeSchema = z.object({
-  model: z.string().trim().max(200).nullable().default(null),
   permissionMode: z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']).nullable().default(null),
   approval: z.enum(['ask', 'approve', 'deny']).nullable().default(null),
-  effort: z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max']).nullable().default(null),
   ultracode: z.boolean().nullable().default(null),
 }).strict()
-/** The opencode parameters a task type can set (Phase 1: model, agent, approval and the global permission preset); each null inherits the executor's fallback. */
+/** The opencode parameters a task type can set (Phase 1: agent, approval and the global permission preset); each null inherits the executor's fallback. The model is the shared execution model's. */
 export const TaskTypeOpencodeSchema = z.object({
-  model: z.string().trim().max(200).nullable().default(null),
   agent: z.string().trim().max(64).nullable().default(null),
   approval: OpencodeApprovalSchema.nullable().default(null),
   permissionPreset: OpencodePermissionPresetSchema.nullable().default(null),
@@ -116,7 +113,7 @@ export const TaskTypeSchema = z.object({
   not: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
   /** The directory every Ticket of this type works in; `fixed` uses it as is, `per-ticket` appends the Ticket's short name. */
   directory: z.string().trim().min(1).refine(absolutePath, 'An absolute path').describe('Absolute worker directory for this task type.'),
-  /** Empty inherits `executor.model` when a Ticket is accepted. */
+  /** The worker model and reasoning effort of this type's engine; empty inherits `executor.model` when both use the same engine. */
   model: RoleModelSchema.nullable().default(null),
   directoryMode: z.enum(['per-ticket', 'fixed']).default('fixed'),
   /** Appended to the worker system prompt for this type; optional. */
@@ -130,9 +127,9 @@ export const TaskTypeSchema = z.object({
   maxConcurrent: z.number().int().min(1).max(LIMITS.maxWorkers.max).optional(),
   /** The worker engine of this type's Tickets; null inherits `executor.engine`. */
   engine: z.enum(ENGINE_NAMES).nullable().default(null),
-  /** The Claude Code profile of this type; null, or a null field, inherits the executor's fallback. */
+  /** The Claude Code profile of this type; null, or a null field, inherits the executor's fallback. The model and effort come from the shared model above. */
   claude: TaskTypeClaudeSchema.nullable().default(null),
-  /** The opencode profile of this type (W2); null, or a null field, inherits the executor's fallback and opencode's own configuration. */
+  /** The opencode profile of this type (W2); null, or a null field, inherits the executor's fallback and opencode's own configuration. The model comes from the shared model above. */
   opencode: TaskTypeOpencodeSchema.nullable().default(null),
   /** The prepare command of this type; null inherits `executor.prepare`, and '' runs none. Only `per-ticket` types run it. */
   prepare: z.string().max(LIMITS.prepareCommand).nullable().default(null),
@@ -172,8 +169,8 @@ export const evalBatch = (settings: Pick<Settings, 'eval'>, source: string): Eva
 export const ClaudePermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
 /** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
 export const ClaudeApprovalSchema = z.enum(['ask', 'approve', 'deny'])
-/** Reasoning effort passed as `--effort`; empty keeps the CLI's own level for the model. */
-export const ClaudeEffortSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max'])
+/** Reasoning effort levels a native engine's catalog may offer; a model can also accept another value, so the picker keeps a saved one. */
+export const NativeEffortSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max'])
 /** Executor settings: worker engine and model, concurrency, ticket directory root and mode, `prepare` command, blocked commands, the native Claude Code executable and its defaults, and the opencode fallbacks the panel hides. */
 export const ExecutorConfigSchema = z.object({
   engine: z.enum(ENGINE_NAMES).default('dsh'),
@@ -188,18 +185,13 @@ export const ExecutorConfigSchema = z.object({
   claudeBin: z.string().trim().default(''),
   /** The opencode executable; empty resolves `OPENCODE_BIN`, the Windows npm global install, then PATH. */
   opencodeBin: z.string().trim().default(''),
-  /** The Claude Code model id; empty keeps the CLI's own selection. */
-  claudeModel: z.string().trim().max(200).default(''),
   /** The mode Claude Code starts in; `auto` reviews actions with its classifier, `bypassPermissions` skips its checks. */
   claudePermissionMode: ClaudePermissionModeSchema.default('auto'),
   /** How a tool call the mode still routes to the bridge is answered; `approve` keeps Tickets unattended. */
   claudeApproval: ClaudeApprovalSchema.default('approve'),
-  /** Reasoning effort for new Claude Code processes; empty keeps the CLI's level. */
-  claudeEffort: ClaudeEffortSchema.default(''),
   /** Turn on Claude Code's dynamic workflows; passed as `{"ultracode":true}` in `--settings`. */
   claudeUltracode: z.boolean().default(false),
-  /** opencode fallbacks, API-only (the panel hides them in favor of the task type): the model and agent a type inherits, and the approval preset. */
-  opencodeModel: z.string().trim().max(200).default(''),
+  /** opencode fallbacks, API-only (the panel hides them in favor of the task type): the agent a type inherits, and the approval preset. The model is the shared execution model's. */
   opencodeAgent: z.string().trim().max(64).default(''),
   opencodeApproval: OpencodeApprovalSchema.default('smart'),
   opencodePermissionPreset: OpencodePermissionPresetSchema.default('smart'),

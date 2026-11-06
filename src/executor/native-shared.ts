@@ -246,7 +246,8 @@ function collectResources(value: unknown, paths: Set<string>, depth = 0): void {
   }
   if (!isRecord(value)) return
   for (const [key, item] of Object.entries(value)) {
-    if (typeof item === 'string' && (key === 'read' || key === 'assignment_read') && RESOURCE_PATH.test(item)) paths.add(item)
+    // `read`, `assignment_read` and `scope_read` (and any later `<part>_read`) name a resource whose full text is appended.
+    if (typeof item === 'string' && (key === 'read' || key.endsWith('_read')) && RESOURCE_PATH.test(item)) paths.add(item)
     else collectResources(item, paths, depth + 1)
   }
 }

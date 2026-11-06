@@ -177,15 +177,15 @@ describe('task types', () => {
   it('snapshots the type\'s prepare, blocked commands and Claude Code profile, and a fixed type skips prepare', async () => {
     const settings = h.runtime.store.settings()
     h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'global-prepare', blockedCommands: ['global-cli'],
-      claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true,
+      claudePermissionMode: 'plan', claudeApproval: 'deny', claudeUltracode: true,
       taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), prepare: 'npm ci',
-        blockedCommands: ['type-cli'], claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask', effort: 'high', ultracode: false } })] } })
+        blockedCommands: ['type-cli'], claude: { permissionMode: 'auto', approval: 'ask', ultracode: false } })] } })
     h.subprocess.spawn.mockClear()
 
     const ticket = await accept(feishu('16', '@bot native work'), 'native')
 
     expect(ticket.execution).toMatchObject({ prepare: 'npm ci', blockedCommands: ['type-cli'],
-      claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask', effort: 'high', ultracode: false } })
+      claude: { permissionMode: 'auto', approval: 'ask', ultracode: false } })
     // The Ticket's execution variables carry the list its type declares, not the executor fallback.
     expect(h.runtime.ticketEnvironment(ticket).find(variable => variable.key === 'DSH_SUPERAGENT_BLOCKED_COMMANDS')?.value).toBe('type-cli')
     // The fixed directory mode skips the prepare command, also when the snapshot names one.
@@ -227,23 +227,24 @@ describe('task types', () => {
   it('snapshots the type\'s opencode profile and keeps an in-flight Ticket on it after a settings edit', async () => {
     const settings = h.runtime.store.settings()
     const rule = { action: 'shell', resource: 'git push *', effect: 'deny' as const }
-    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'dsh', opencodeModel: 'global/model',
+    const model = { provider: 'opencode-go', model: 'kimi-k3' }
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'dsh',
       opencodeAgent: 'global-agent', opencodeApproval: 'ask', opencodePermissionPreset: 'safe', opencodePermissionRules: [rule],
-      taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), engine: 'opencode',
-        opencode: { model: 'type/model', agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } })] } })
+      taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), engine: 'opencode', model,
+        opencode: { agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } })] } })
 
     const ticket = await accept(feishu('22', '@bot native work'), 'native')
 
-    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'type', engineOptions: { opencode: {
-      model: 'type/model', agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } } })
+    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'type', model,
+      engineOptions: { opencode: { agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } } })
     // A later settings edit does not move the in-flight Ticket: the driver reads the snapshot before the type and global values.
     h.runtime.store.saveSettings({ ...h.runtime.store.settings(), executor: { ...h.runtime.store.settings().executor,
-      opencodeModel: 'moved/model', opencodeAgent: 'moved-agent', opencodeApproval: 'approve', opencodePermissionPreset: 'read-only',
+      opencodeAgent: 'moved-agent', opencodeApproval: 'approve', opencodePermissionPreset: 'read-only',
       opencodePermissionRules: [] } })
     const after = h.runtime.store.tickets.get(ticket.id)!
-    expect(after.execution!.engineOptions!.opencode).toEqual({ model: 'type/model', agent: 'build', approval: 'deny',
+    expect(after.execution!.engineOptions!.opencode).toEqual({ agent: 'build', approval: 'deny',
       permissionPreset: 'full', permissionRules: [rule] })
-    expect(opencodeSettingsForTicket(h.runtime.store.settings(), after)).toMatchObject({ opencodeModel: 'type/model',
+    expect(opencodeSettingsForTicket(h.runtime.store.settings(), after)).toMatchObject({
       opencodeAgent: 'build', opencodeApproval: 'deny', opencodePermissionPreset: 'full', opencodePermissionRules: [rule] })
     // A Ticket on another engine carries no opencode options.
     h.runtime.store.saveSettings({ ...h.runtime.store.settings(), executor: { ...h.runtime.store.settings().executor, engine: 'dsh',
@@ -254,24 +255,24 @@ describe('task types', () => {
 
   it('snapshots the global opencode fallbacks for a legacy Ticket when the executor runs opencode', async () => {
     const settings = h.runtime.store.settings()
-    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'opencode', opencodeModel: 'global/model',
+    const model = { provider: 'opencode-go', model: 'kimi-k3' }
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'opencode', model,
       opencodeAgent: 'plan', opencodeApproval: 'deny', opencodePermissionPreset: 'read-only' } })
 
     const ticket = await accept(feishu('24', '@bot fix this'))
 
-    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'global', engineOptions: { opencode: {
-      model: 'global/model', agent: 'plan', approval: 'deny', permissionPreset: 'read-only', permissionRules: [] } } })
+    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'global', model, engineOptions: { opencode: {
+      agent: 'plan', approval: 'deny', permissionPreset: 'read-only', permissionRules: [] } } })
   })
 
   it('snapshots the executor fallbacks for a legacy Ticket, and an older Ticket resolves its profile when it runs', async () => {
     const settings = h.runtime.store.settings()
     h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'echo legacy-prepare',
-      blockedCommands: ['global-cli'], claudeModel: 'claude-global' } })
+      blockedCommands: ['global-cli'] } })
 
     const ticket = await accept(feishu('21', '@bot fix this'))
     expect(ticket.execution).toMatchObject({ engine: 'dsh', engineSource: 'global', prepare: 'echo legacy-prepare',
-      blockedCommands: ['global-cli'],
-      claude: { model: 'claude-global', permissionMode: 'auto', approval: 'approve', effort: '', ultracode: false } })
+      blockedCommands: ['global-cli'], claude: { permissionMode: 'auto', approval: 'approve', ultracode: false } })
     // A Ticket accepted before the profile was snapshotted resolves its type's current list for its environment.
     const stored = h.runtime.store.tickets.get(ticket.id)!
     h.runtime.store.tickets.save({ ...stored, execution: { ...stored.execution!, prepare: undefined, blockedCommands: undefined,

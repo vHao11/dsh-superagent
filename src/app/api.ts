@@ -1,6 +1,7 @@
 /** Type-only management API contract between the web panel and host routes, imported by the panel without bundling host code. */
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { EngineName } from '../core/index.ts'
+import type { EngineCatalog } from './engine-models.ts'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
@@ -46,6 +47,8 @@ export interface Api {
   'POST policy-sync/:id': { response: { policy: unknown } }
   'POST setup/check': { response: { restarting: true } }
   'GET models': { response: ModelCatalog }
+  /** The models one worker engine can run, for the engine-aware model picker. */
+  'GET engine-models': { query: { engine: EngineName }; response: EngineCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }
   'POST prompts/preview': { body: PromptConfig; response: ReturnType<Prompts['preview']> }
