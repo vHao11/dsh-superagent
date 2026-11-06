@@ -68,7 +68,7 @@ it('falls back to typing the Provider and Model when the DSH catalog cannot be r
   expect(server.settings.eval.model).toEqual({ provider: 'worker-provider', model: 'worker-model' })
 })
 
-it('saves the Eval block on the Policy settings and the Executor with its execution environment on the Execution settings, each against its own revision', async () => {
+it('saves the Eval block and the two Execution cards: global parameters, the legacy directory, and a task-type profile', async () => {
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
@@ -84,39 +84,46 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   // An empty root uses the default directory, which the field names instead of looking set.
   expect(field<HTMLInputElement>(zh.executionDirectory).closest('.dt-field')!.querySelector('small')?.textContent).toBe('留空时用 /srv/dsh-superagent/work')
   await type(field<HTMLInputElement>(zh.executionDirectory), '/srv/work')
-  // A variable picked from the list goes where the caret is in the prepare command.
-  const prepare = field<HTMLTextAreaElement>(zh.prepareCommand)
+  const [workerProvider, workerModel, effort] = all('.dt-model select')
+  await type(workerProvider as HTMLSelectElement, 'deepseek-account'); await type(workerModel as HTMLSelectElement,
+    'deepseek-flash'); await type(effort as HTMLSelectElement, 'high')
+  expect([...(all('.dt-model select')[2] as HTMLSelectElement).options].map(option => option.value)).toEqual(['', 'off', 'low',
+    'high', 'max'])
+  // Adding a task type replaces the legacy directory pair with the type's own profile.
+  await click(zh.taskTypeAdd)
+  await type(field<HTMLInputElement>(zh.taskTypeName), '集中交易类问题')
+  await type(field<HTMLTextAreaElement>(zh.taskTypeDescription), '集中交易相关的问题修复')
+  await type(field<HTMLInputElement>(zh.taskTypeDirectory), '/srv/work/jzjy')
+  // A variable picked from the list goes where the caret is in this type's prepare command.
+  const prepare = field<HTMLTextAreaElement>(zh.taskTypePrepare)
   await type(prepare, 'git worktree add ')
   prepare.setSelectionRange(17, 17)
   await click('可用的环境变量 3')
   expect(all('.dt-table tbody tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR工单的执行目录执行器', 'DSH_SUPERAGENT_NAME工单短名执行器',
     'DSH_SUPERAGENT_GITHUB_REPOSITORY仓库GitHub · 已关闭'])
   await click('DSH_SUPERAGENT_DIR')
-  expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
-  await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
-  const [workerProvider, workerModel, effort] = all('.dt-model select')
-  await type(workerProvider as HTMLSelectElement, 'deepseek-account'); await type(workerModel as HTMLSelectElement,
-    'deepseek-flash'); await type(effort as HTMLSelectElement, 'high')
-  expect([...(all('.dt-model select')[2] as HTMLSelectElement).options].map(option => option.value)).toEqual(['', 'off', 'low',
-    'high', 'max'])
-  // Choosing the native engine reveals its executable, model, permission mode, approval handling, effort and Ultracode.
-  await type(field<HTMLSelectElement>(zh.executorEngine), 'claude-code')
-  await type(field<HTMLInputElement>(zh.claudeBin), '/opt/claude')
-  await type(field<HTMLInputElement>(zh.claudeModel), 'claude-sonnet-5-5')
-  await type(field<HTMLSelectElement>(zh.claudePermissionMode), 'acceptEdits')
-  await type(field<HTMLSelectElement>(zh.claudeApproval), 'ask')
-  await type(field<HTMLSelectElement>(zh.claudeEffort), 'max')
-  await click(zh.claudeUltracode)
-  // The fixed directory mode runs every Ticket in the root and skips the prepare command, which the form says.
-  await type(field<HTMLSelectElement>(zh.directoryMode), 'fixed')
-  expect(field<HTMLTextAreaElement>(zh.prepareCommand).closest('.dt-field')!.querySelector('small')?.textContent).toBe(zh.prepareCommandFixed)
+  expect(field<HTMLTextAreaElement>(zh.taskTypePrepare).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
+  await type(field<HTMLInputElement>(zh.taskTypeBlockedCommands), 'gh-personal  gh.other')
+  // Choosing the native engine reveals the type's Claude Code parameters.
+  await type(field<HTMLSelectElement>(zh.taskTypeEngine), 'claude-code')
+  await type(field<HTMLInputElement>(zh.taskTypeClaudeModel), 'claude-sonnet-5-5')
+  await type(field<HTMLSelectElement>(zh.taskTypeClaudePermissionMode), 'acceptEdits')
+  await type(field<HTMLSelectElement>(zh.taskTypeClaudeApproval), 'ask')
+  await type(field<HTMLSelectElement>(zh.taskTypeClaudeEffort), 'max')
+  await type(field<HTMLSelectElement>(zh.taskTypeClaudeUltracode), 'on')
+  // The fixed directory mode runs every Ticket in the type's directory and skips the prepare command, which the form says.
+  expect(field<HTMLTextAreaElement>(zh.taskTypePrepare).closest('.dt-field')!.textContent).toContain(zh.prepareCommandFixed)
   await click(zh.save)
-  expect(server.settings.executor).toMatchObject({ engine: 'claude-code', maxWorkers: 5, directory: '/srv/work', directoryMode: 'fixed',
-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], claudeBin: '/opt/claude',
-    claudeModel: 'claude-sonnet-5-5', claudePermissionMode: 'acceptEdits', claudeApproval: 'ask', claudeEffort: 'max',
-    claudeUltracode: true, model: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'high' } })
-  // A fresh install seeds no task types; the operator adds them in the panel.
-  expect(server.settings.executor.taskTypes).toEqual([])
+  expect(server.settings.executor).toMatchObject({ maxWorkers: 5, directory: '/srv/work', directoryMode: 'per-ticket',
+    model: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'high' } })
+  // The hidden global fallbacks were not touched; the type carries its own execution profile.
+  expect(server.settings.executor.engine).toBe('dsh')
+  expect(server.settings.executor.claudeModel).toBe('')
+  expect(server.settings.executor.taskTypes).toHaveLength(1)
+  expect(server.settings.executor.taskTypes[0]).toMatchObject({ id: 'custom-1', name: '集中交易类问题', directory: '/srv/work/jzjy',
+    directoryMode: 'fixed', engine: 'claude-code', prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"',
+    blockedCommands: ['gh-personal', 'gh.other'], claude: { model: 'claude-sonnet-5-5', permissionMode: 'acceptEdits',
+      approval: 'ask', effort: 'max', ultracode: true } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])
 })

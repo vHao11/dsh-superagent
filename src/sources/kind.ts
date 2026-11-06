@@ -98,6 +98,12 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
   /** The task type every Trigger of this kind defaults to, according to its configuration; undefined when the kind sets none. */
   taskType?(trigger: Trigger, config: C): string | undefined
+  /**
+   * The kind authenticates the people it admits itself, such as a service that signs its inbound requests; `revalidate` then
+   * checks only that the Source is installed, enabled and listening, not the Policy's allowed list. Only kinds whose own
+   * authentication is the sole admission path declare it.
+   */
+  authenticates?: true
   /** Outbound reply adapter; kinds without `channel` produce no replies or channel checks. */
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */

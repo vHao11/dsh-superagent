@@ -9,10 +9,11 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import { classifyTaskType, unclassifiedTaskTypeError, type Settings } from '../policy.ts'
+import { classifyTaskType, taskTypeOf, unclassifiedTaskTypeError, type Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
+import { executorProfile } from '../app/executor-profile.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
@@ -179,14 +180,28 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   // Work cannot proceed unclassified: configured task types require one; an unknown explicit id is refused as well.
   if (choice.source === 'unclassified') throw unclassifiedTaskTypeError(settings, choice.unknown)
   const root = executionRoot(settings, stateDir)
-  const engine = outcome.engine ?? settings.executor.engine
+  // The type's execution profile resolves over the executor fallbacks once; an explicitly chosen engine still wins over both.
+  const profile = executorProfile(settings, choice.source === 'legacy' ? undefined : choice.type)
+  const engine = outcome.engine ?? profile.engine
+  const engineSource: NonNullable<Execution['engineSource']> = outcome.engine ? 'explicit'
+    : choice.source !== 'legacy' && choice.type.engine ? 'type' : 'global'
+  // The resolved profile is snapshotted with the Ticket, so a later settings edit does not move its in-flight execution.
+  // The opencode profile rides in `engineOptions` only when that engine runs the Ticket; the driver then reads this snapshot
+  // before the type and global fallbacks (plan §5.5), while the claude parameters stay available for a later retry.
+  const claude = profile.claude
+  const opencode = profile.opencode
+  const snapshot = { engine, engineSource, prepare: profile.prepare, blockedCommands: profile.blockedCommands,
+    claude: { model: claude.model, permissionMode: claude.permissionMode, approval: claude.approval, effort: claude.effort,
+      ultracode: claude.ultracode },
+    ...(engine === 'opencode' ? { engineOptions: { opencode: { model: opencode.model, agent: opencode.agent, approval: opencode.approval,
+      permissionPreset: opencode.permissionPreset, permissionRules: [...opencode.permissionRules] } } } : {}) }
   // Without task types the legacy executor directory applies unchanged.
   if (choice.source === 'legacy')
-    return { name, directory: settings.executor.directoryMode === 'fixed' ? root : join(root, name), assignment, engine }
+    return { name, directory: settings.executor.directoryMode === 'fixed' ? root : join(root, name), assignment, ...snapshot }
   const type = choice.type
   // A task type owns its root and mode.
   const directory = type.directoryMode === 'fixed' ? type.directory : join(type.directory, name)
-  return { name, directory, assignment, engine, taskType: type.id, taskTypeSource: choice.source,
+  return { name, directory, assignment, ...snapshot, taskType: type.id, taskTypeSource: choice.source,
     directoryMode: type.directoryMode, model: type.model ?? settings.executor.model, instructions: type.instructions,
     ...(type.readOnly ? { readOnly: true as const } : {}) }
 }
@@ -330,9 +345,12 @@ export class DshExecutor implements Executor {
    */
   private async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
-    const { directoryMode, prepare } = this.host.store.settings().executor
+    const settings = this.host.store.settings()
+    // An old Ticket has no prepare snapshot: resolve its type's command now, as the Ticket would have been accepted today.
+    const profile = executorProfile(settings, taskTypeOf(settings, ticket.execution?.taskType))
     // A fixed task type owns a checkout that already exists; only per-ticket mode creates and prepares a workspace.
-    const command = (ticket.execution?.directoryMode ?? directoryMode) === 'fixed' ? '' : prepare.trim()
+    const command = (ticket.execution?.directoryMode ?? settings.executor.directoryMode) === 'fixed' ? ''
+      : (ticket.execution?.prepare ?? profile.prepare).trim()
     await mkdir(dirname(directory), { recursive: true })
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.

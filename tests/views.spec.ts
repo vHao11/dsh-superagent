@@ -319,3 +319,32 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
 })
+
+it('words task types added, edited and removed, and a global engine change, in the settings history', () => {
+  const host = views()
+  const type = (extra: Record<string, unknown> = {}) => ({ id: 'native', name: 'Native work', description: 'Native work.',
+    directory: '/srv/native', ...extra })
+  const save = (executor: Record<string, unknown>) => {
+    const current = store.settings()
+    store.saveSettings(SettingsSchema.parse({ ...current, executor: { ...current.executor, ...executor } }))
+  }
+  save({ engine: 'claude-code', taskTypes: [type()] })
+  save({ engine: 'dsh', taskTypes: [type({ engine: 'claude-code', prepare: 'npm ci', blockedCommands: ['type-cli'],
+    claude: { model: 'claude-x', permissionMode: null, approval: null, effort: null, ultracode: null } })] })
+  save({ taskTypes: [] })
+  const revision = store.get(KV.settings.revision)!
+  const changes = (value: number) => policyHistory(store, host.sources, 'v').items.find(item => item.revision === value)!.changes
+  // A save that adds the type and picks a global engine names both.
+  expect(changes(revision - 2)).toEqual([{ code: 'engine', from: 'dsh', to: 'claude-code' },
+    { code: 'taskTypeAdded', name: 'Native work' }])
+  // A type edit lists each changed profile field, including the nested Claude Code parameters.
+  expect(changes(revision - 1)).toEqual([{ code: 'engine', from: 'claude-code', to: 'dsh' },
+    { code: 'taskTypeChanged', name: 'Native work', field: 'engine', from: '', to: 'claude-code' },
+    { code: 'taskTypeChanged', name: 'Native work', field: 'claude', from: '',
+      to: '{"model":"claude-x","permissionMode":null,"approval":null,"effort":null,"ultracode":null}' },
+    { code: 'taskTypeChanged', name: 'Native work', field: 'prepare', from: '', to: 'npm ci' },
+    { code: 'taskTypeChanged', name: 'Native work', field: 'blockedCommands', from: '', to: 'type-cli' }])
+  // Removing it leaves the history a removal, not a silent gap.
+  expect(changes(revision)).toEqual([{ code: 'taskTypeRemoved', name: 'Native work' }])
+})
+

@@ -11,6 +11,11 @@ export type ScopeResult = { listened: true; observed: boolean; row?: string } | 
 /** Source configuration as the domain sees it: listening scope per trigger or per recorded Mandate basis. */
 export interface SourceScope {
   scope(input: { source: string; meta: Record<string, unknown> }): ScopeResult
+  /**
+   * Whether `source` is installed, enabled and listening, and authenticates the people it admits itself (such as a service
+   * that signs its inbound requests). A `via:'addressed'` Mandate of such a Source revalidates without the Policy allow-list.
+   */
+  authenticates?(source: string): boolean
 }
 
 /** Versioned rules; `gate` decides who may originate work. Source scope is not part of Policy. */

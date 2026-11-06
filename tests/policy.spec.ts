@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed,
-  unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
-import type { MandateBasis } from '../src/core/index.ts'
+import { SettingsSchema, TaskTypeSchema, assessmentOutcome, classifyTaskType, policyEffects, settingsPolicy, policyVersion, allowedSender,
+  anyoneAllowed, unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
+import type { Mandate, MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
+import { deploymentBlockedCommands, executorProfile, opencodeSettingsForTicket } from '../src/app/executor-profile.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
+import { bqaKind } from '../src/sources/bqa.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
@@ -230,6 +232,34 @@ describe('revalidate and version', () => {
     expect(setup({ ...base, policy: { ...base.policy, sources: { ...base.policy.sources, github: { allowed: [], admission: {} } } } }).version).not.toBe(version)
   })
 })
+describe('revalidating a self-authenticating Source', () => {
+  function bqaSetup(enabled = true) {
+    const settings = SettingsSchema.parse({ sources: { bqa: { enabled, config: {} } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register(bqaKind)
+    return { sources, policy: settingsPolicy(settings, sources) }
+  }
+  const mandate: Mandate = { strength: 'explicit', policyVersion: 'v', basis: { via: 'addressed', source: 'bqa', addressed: 'direct' },
+    actor: { source: 'bqa', id: 'user-1' }, scope: '' }
+  it('T5: resumes an addressed Mandate without the allow-list while the Source listens, and refuses it once disabled or uninstalled', () => {
+    const listening = bqaSetup()
+    expect(listening.sources.authenticates('bqa')).toBe(true)
+    expect(listening.policy.revalidate(mandate)).toBe(true)
+    // The Source's own authentication is the only admission path: disabled, it no longer vouches for anyone.
+    const disabled = bqaSetup(false)
+    expect(disabled.sources.authenticates('bqa')).toBe(false)
+    expect(disabled.policy.revalidate(mandate)).toBe(false)
+    // A Source whose plugin is not installed authenticates nothing.
+    const bare = new SourceRegistry(() => SettingsSchema.parse({ sources: { bqa: { enabled: true, config: {} } } }))
+    expect(bare.authenticates('bqa')).toBe(false)
+    expect(settingsPolicy(SettingsSchema.parse({ sources: { bqa: { enabled: true, config: {} } } }), bare).revalidate(mandate)).toBe(false)
+    // Every other Source keeps the allow-list rule.
+    const feishuMandate: Mandate = { strength: 'explicit', policyVersion: 'v', scope: '',
+      basis: { via: 'addressed', source: 'feishu', scope: { chatId: CHAT, direct: false }, addressed: 'mention' }, actor: { source: 'feishu', id: 'ou_guest' } }
+    expect(policy.revalidate(feishuMandate)).toBe(false)
+    expect(policy.revalidate({ ...feishuMandate, actor: { source: 'feishu', id: MEMBER } })).toBe(true)
+  })
+})
 describe('settings migration', () => {
   it('moves each member\'s identity into each Source\'s part of the Policy and drops the fields prompts and the execution environment replaced', () => {
     const saved = SettingsSchema.parse(migrateSettings({
@@ -256,7 +286,8 @@ describe('settings migration', () => {
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' }, batches: {} },
       executor: { engine: 'dsh', model: null, maxWorkers: 5, directory: '', directoryMode: 'per-ticket', prepare: '', blockedCommands: [],
-        claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
+        claudeBin: '', opencodeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
+        opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart', opencodePermissionRules: [],
         taskTypes: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
@@ -534,5 +565,66 @@ describe('task types', () => {
     const legacy = assessmentOutcome(assessment, SettingsSchema.parse({ policy: { rules } }), 'explicit')
     expect(legacy).toMatchObject({ kind: 'accept' })
     expect(legacy).not.toHaveProperty('taskType')
+  })
+})
+
+describe('task type execution profile', () => {
+  it('defaults every new profile field to inherit, and accepts the opencode engine and its parameters', () => {
+    const settings = SettingsSchema.parse({})
+    expect(settings.executor).toMatchObject({ opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart',
+      opencodePermissionPreset: 'smart', opencodePermissionRules: [] })
+    const plain = TaskTypeSchema.parse({ id: 'docs', name: 'Docs', description: 'Docs work.', directory: 'D:\\w\\docs' })
+    expect(plain).toMatchObject({ engine: null, claude: null, opencode: null, prepare: null, blockedCommands: null })
+    expect(TaskTypeSchema.parse({ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'opencode',
+      claude: { model: 'claude-x' }, opencode: { approval: 'deny', permissionPreset: 'safe' }, prepare: 'npm ci', blockedCommands: ['cli-x'] }))
+      .toMatchObject({ engine: 'opencode', claude: { model: 'claude-x', permissionMode: null }, opencode: { approval: 'deny' },
+        prepare: 'npm ci', blockedCommands: ['cli-x'] })
+  })
+  it('resolves each profile field over the executor fallback, field by field, with \'\' and [] as explicit none', () => {
+    const settings = SettingsSchema.parse({ executor: { prepare: 'global-prepare', blockedCommands: ['global-cli'],
+      claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true,
+      opencodeModel: 'opencode/model', opencodeAgent: 'build', opencodeApproval: 'ask', opencodePermissionPreset: 'safe',
+      taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'claude-code',
+        prepare: 'type-prepare', blockedCommands: [], claude: { model: 'claude-type', permissionMode: 'auto', approval: 'approve',
+          effort: '', ultracode: false }, opencode: { approval: 'deny' } }] } })
+    expect(executorProfile(settings, settings.executor.taskTypes[0]!)).toEqual({ engine: 'claude-code', prepare: 'type-prepare',
+      blockedCommands: [], claude: { bin: '', model: 'claude-type', permissionMode: 'auto', approval: 'approve', effort: '', ultracode: false },
+      opencode: { model: 'opencode/model', agent: 'build', approval: 'deny', permissionPreset: 'safe', permissionRules: [] } })
+    // Everything a type leaves null inherits; a type that sets no profile, and no type at all, resolve to the fallbacks.
+    const inherited = { engine: 'dsh', prepare: 'global-prepare', blockedCommands: ['global-cli'],
+      claude: { bin: '', model: 'claude-global', permissionMode: 'plan', approval: 'deny', effort: 'low', ultracode: true },
+      opencode: { model: 'opencode/model', agent: 'build', approval: 'ask', permissionPreset: 'safe', permissionRules: [] } }
+    expect(executorProfile(settings, TaskTypeSchema.parse({ id: 'plain', name: 'Plain', description: 'Plain work.',
+      directory: 'D:\\w\\plain' }))).toEqual(inherited)
+    expect(executorProfile(settings, undefined)).toEqual(inherited)
+  })
+  it('resolves a worker\'s opencode profile from the Ticket snapshot, then its type, then the global fallback', () => {
+    const settings = SettingsSchema.parse({ executor: { opencodeModel: 'global/model', opencodeAgent: 'global-agent',
+      opencodeApproval: 'ask', opencodePermissionPreset: 'safe',
+      opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'deny' }],
+      taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'opencode',
+        opencode: { model: 'type/model', approval: 'smart' } }] } })
+    const ticket = (execution: Record<string, unknown> = {}): Ticket => ({ execution: { name: 'native-1', directory: 'D:\\w\\native',
+      assignment: '', ...execution } }) as Ticket
+    // A Ticket accepted before the snapshot existed resolves its type over the global fallback, field by field.
+    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({ opencodeModel: 'type/model',
+      opencodeAgent: 'global-agent', opencodeApproval: 'smart', opencodePermissionPreset: 'safe',
+      opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'deny' }] })
+    // The snapshot wins whole over both the type and the global fallback.
+    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native', engineOptions: { opencode: { model: 'snap/model',
+      agent: 'plan', approval: 'deny', permissionPreset: 'full', permissionRules: [] } } }))).toMatchObject({
+      opencodeModel: 'snap/model', opencodeAgent: 'plan', opencodeApproval: 'deny', opencodePermissionPreset: 'full',
+      opencodePermissionRules: [] })
+    // No type at all (legacy Ticket) resolves the global fallback.
+    expect(opencodeSettingsForTicket(settings, ticket())).toMatchObject({ opencodeModel: 'global/model', opencodeAgent: 'global-agent',
+      opencodeApproval: 'ask', opencodePermissionPreset: 'safe' })
+  })
+  it('enforces the union of the executor\'s blocked commands and every type\'s declared list', () => {
+    const settings = SettingsSchema.parse({ executor: { blockedCommands: ['global-cli', 'shared-cli'],
+      taskTypes: [{ id: 'a', name: 'A', description: 'A work.', directory: 'D:\\w\\a', blockedCommands: ['type-a-cli', 'shared-cli'] },
+        { id: 'b', name: 'B', description: 'B work.', directory: 'D:\\w\\b', blockedCommands: [] },
+        { id: 'c', name: 'C', description: 'C work.', directory: 'D:\\w\\c' }] } })
+    expect(deploymentBlockedCommands(settings)).toEqual(['global-cli', 'shared-cli', 'type-a-cli'])
+    expect(deploymentBlockedCommands(SettingsSchema.parse({ executor: { blockedCommands: ['only-global'] } }))).toEqual(['only-global'])
   })
 })

@@ -5,6 +5,7 @@ import { sameName } from '../infra/text.ts'
 import { GithubAccountsSchema } from '../deployment.ts'
 import { TaskTypeIdSchema } from '../policy.ts'
 import { CliError, validItems, type Tally } from '../infra/commands.ts'
+import { ConversationModeSchema, conversationField } from './conversation.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
   from './github-trigger.ts'
@@ -27,7 +28,9 @@ const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number()
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   taskType: TaskTypeIdSchema.optional(),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false),
+  /** Names today's behavior explicitly: comments on one Issue or PR continue one conversation. */
+  conversation: ConversationModeSchema.default('thread') }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
 const OBSERVED = { issues: 'observeIssues', pulls: 'observePulls', comments: 'observeComments', ci: 'observeCi' } as const
 type Scope = keyof typeof OBSERVED
@@ -49,6 +52,7 @@ export const githubKind: SourceKind<GithubConfig> = {
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
     { key: 'taskType', type: 'text', label: { zh: '默认任务类型', en: 'Default task type' }, pattern: '^[a-z][a-z0-9-]{0,63}$',
       hint: { zh: '这个来源收到的每条触发默认归到这个类型；不设时工作必须显式分类，未分类不能推进。', en: 'Every trigger this Source receives defaults to this type; when unset, work must be classified explicitly and unclassified work cannot proceed.' } },
+    conversationField('thread'),
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },

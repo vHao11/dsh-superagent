@@ -80,7 +80,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(server.requests.find(request => request.path === 'settings/source:feishu')).toMatchObject({ method: 'PUT', body: { revision: 0,
     value: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_other', listen: 'all' }],
-      directMessages: false } } } })
+      directMessages: false, conversation: 'thread' } } } })
   expect(server.settings.sources.feishu!.config).toMatchObject({ directMessages: false })
   const github = all('.dt-card')[1]!
   await click('运行来源：GitHub')
@@ -99,15 +99,19 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   const github = all('.dt-card')[1]!
   expect(github.textContent).toContain('当前账号 @agent-bot')
   const labels = () => [...github.querySelectorAll('label')].map(label => label.textContent)
-  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型'])
+  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型', '连续会话'])
   expect(field<HTMLInputElement>('监听的仓库').value).toBe('acme/widgets')
+  // Every Source states its conversation mode; a topic's Thread continues one Ticket by default.
+  const conversation = all('[aria-label="连续会话"]')[0]!
+  expect([...conversation.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['每条消息独立', '同一会话连续'])
+  expect(conversation.querySelector('[aria-selected="true"]')?.textContent).toBe('同一会话连续')
   // A fact describes the saved value, so an edited CLI shows none until it is saved.
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), 'gh-other')
   expect(github.textContent).not.toContain('当前账号 @agent-bot')
   await click(zh.discard)
   expect(github.textContent).toContain('当前账号 @agent-bot')
   await click([...github.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes('高级'))!)
-  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型', '轮询间隔 / 秒', '连续失败几次后报告异常'])
+  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '默认任务类型', '连续会话', '轮询间隔 / 秒', '连续失败几次后报告异常'])
   expect(all('.dt-card')[0]!.textContent).toContain('当前机器人 Widgets Bot')
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), '/opt/bin/gh-agent')
   expect(github.textContent).toContain('保存会重启 dsh-superagent：2 个进行中的派工会中断，并带恢复说明重新开始。')

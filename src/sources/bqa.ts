@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { key, type OutboundMessage, type RetrievalCall, type TokenUsage, type Trigger } from '../core/index.ts'
+import { ConversationModeSchema, continuityOf, conversationField } from './conversation.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks, SourceChannel, SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
@@ -21,6 +22,8 @@ export const BqaConfigSchema = z.object({
   taskType: z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes, starting with a letter').default('consult'),
   autoAccept: z.enum(['explicit', 'off']).default('explicit'),
   directReply: z.boolean().default(true),
+  /** Whether each question is its own conversation, its own Ticket and Session, or the window's questions share one. */
+  conversation: ConversationModeSchema.default('off'),
   bqaBaseUrl: z.string().trim().url().default('http://127.0.0.1:8765'),
   pollSeconds: z.number().int().min(5).max(300).default(30),
 }).strict()
@@ -44,10 +47,11 @@ export const bqaTitle = (question: string): string => question.replace(/\s+/g, '
  * Builds the Trigger of one BQA question: its conversation is the Thread, the authenticated user is the actor, and its
  * Channel carries what the answer callback needs. The id is stable per `requestId`, so a retried delivery is no duplicate.
  */
-export function bqaTrigger(input: BqaQuestion): Trigger {
+export function bqaTrigger(input: BqaQuestion, config: Pick<BqaConfig, 'conversation'> = { conversation: 'off' }): Trigger {
   const thread = `bqa:${input.conversationId}`
   return { id: key('bqa', input.requestId), source: SOURCE, threads: [{ source: SOURCE, id: input.conversationId }],
     actor: { source: SOURCE, id: input.userId }, human: true, addressed: 'direct', at: new Date().toISOString(), text: input.question,
+    continuity: continuityOf(config.conversation),
     channel: { source: SOURCE, thread, address: { conversationId: input.conversationId, requestId: input.requestId, userId: input.userId } },
     meta: { requestId: input.requestId, conversationId: input.conversationId, releaseId: input.releaseId, mode: input.mode,
       ...input.userName ? { userName: input.userName } : {}, ...input.deadlineAt ? { deadlineAt: input.deadlineAt } : {},
@@ -130,6 +134,7 @@ export const bqaKind: SourceKind<BqaConfig> = {
       hint: { zh: 'BQA 工单使用的任务类型（需要先在执行器设置里配置），默认 consult。', en: 'The task type of BQA tickets, configured in the executor settings first; consult by default.' } },
     { key: 'directReply', type: 'switch', label: { zh: '答案直回', en: 'Send answers back directly' },
       hint: { zh: 'worker 报告完成时把报告正文回传 BQA；blocked/failed/dropped 只回传状态。', en: 'Send a ready report\'s full text back to BQA; blocked, failed and dropped send their status only.' } },
+    conversationField('off'),
     { key: 'bqaBaseUrl', type: 'text', advanced: true, label: { zh: 'BQA 地址', en: 'BQA base URL' },
       hint: { zh: '答案回传与健康检查使用的 BQA 服务根地址。', en: 'The BQA service root used for answer callbacks and health checks.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 5, max: 300, label: { zh: '健康检查间隔 / 秒', en: 'Health check interval / seconds' } },
@@ -137,6 +142,8 @@ export const bqaKind: SourceKind<BqaConfig> = {
   health: ['bqa'],
   // Every BQA question is a direct message from an authenticated person, so the scope listens to it in full.
   scope: () => ({ listened: true, observed: false, row: 'questions' }),
+  // Its shared secret authenticates each question, so an explicit BQA Mandate revalidates without the (unused) allow-list.
+  authenticates: true,
   taskType: (_trigger, config) => config.taskType,
   channel: bqaChannel,
   threadContext: {

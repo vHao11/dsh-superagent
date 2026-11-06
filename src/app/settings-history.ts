@@ -9,13 +9,46 @@ type SourceSettings = SettingsVersion['settings']['sources'][string]
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
   | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
-  | 'blockedCommands' | 'directoryMode' | 'claudePermissionMode' | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode'
+  | 'blockedCommands' | 'directoryMode' | 'claudePermissionMode' | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode' | 'engine'
+  | 'taskTypeAdded' | 'taskTypeRemoved' | 'taskTypeChanged'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
 export interface SettingsChange {
   code: SettingsChangeCode; items?: string[]; from?: string | number | boolean; to?: string | number | boolean; name?: string; source?: string
   field?: string; part?: true
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+type TaskTypeValue = SettingsVersion['settings']['executor']['taskTypes'][number]
+/** The task type's fields the history compares, each as one `taskTypeChanged` entry naming the field. */
+const TASK_TYPE_FIELDS: readonly (keyof TaskTypeValue)[] = ['name', 'description', 'examples', 'not', 'directory', 'directoryMode', 'model',
+  'instructions', 'readOnly', 'engine', 'claude', 'opencode', 'prepare', 'blockedCommands']
+/** Shows one task-type field value in the history: lists joined, a model as `provider/model`, anything else as stored. */
+function taskTypeValue(field: keyof TaskTypeValue, value: unknown): string | number | boolean {
+  if (field === 'blockedCommands') return (Array.isArray(value) ? value : []).join(' ')
+  if (field === 'examples' || field === 'not') return (Array.isArray(value) ? value : []).join('; ')
+  if (field === 'model' && value !== null && typeof value === 'object') {
+    const model = value as { provider?: string; model?: string; reasoningEffort?: string }
+    return `${model.provider ?? ''}/${model.model ?? ''}${model.reasoningEffort ? ` @ ${model.reasoningEffort}` : ''}`
+  }
+  if (value === null || value === undefined) return ''
+  return typeof value === 'object' ? JSON.stringify(value) : value as string | number | boolean
+}
+/** The task types added, removed and edited between two revisions, each edit one change naming its field. */
+function taskTypeChanges(before: readonly TaskTypeValue[], after: readonly TaskTypeValue[]): SettingsChange[] {
+  const changes: SettingsChange[] = []
+  const previous = new Map(before.map(type => [type.id, type]))
+  for (const type of after) {
+    const was = previous.get(type.id)
+    if (!was) { changes.push({ code: 'taskTypeAdded', name: type.name || type.id }); continue }
+    for (const field of TASK_TYPE_FIELDS) {
+      if (same(was[field], type[field])) continue
+      changes.push({ code: 'taskTypeChanged', name: type.name || type.id, field,
+        from: taskTypeValue(field, was[field]), to: taskTypeValue(field, type[field]) })
+    }
+    previous.delete(type.id)
+  }
+  for (const type of previous.values()) changes.push({ code: 'taskTypeRemoved', name: type.name || type.id })
+  return changes
+}
 function fieldChanges(id: string, fields: readonly FieldSpec[], a: Record<string, unknown>, b: Record<string, unknown>, part?: true): SettingsChange[] {
   const changes: SettingsChange[] = []
   const at = { source: id, ...part ? { part } : {} }
@@ -76,6 +109,9 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (before.executor.claudeApproval !== after.executor.claudeApproval) changes.push({ code: 'claudeApproval', from: before.executor.claudeApproval, to: after.executor.claudeApproval })
   if (before.executor.claudeEffort !== after.executor.claudeEffort) changes.push({ code: 'claudeEffort', from: before.executor.claudeEffort, to: after.executor.claudeEffort })
   if (before.executor.claudeUltracode !== after.executor.claudeUltracode) changes.push({ code: 'claudeUltracode', from: before.executor.claudeUltracode, to: after.executor.claudeUltracode })
+  // The task types carry most of the execution profile now, so their edits and the global engine are part of the audit trail.
+  if (before.executor.engine !== after.executor.engine) changes.push({ code: 'engine', from: before.executor.engine, to: after.executor.engine })
+  changes.push(...taskTypeChanges(before.executor.taskTypes, after.executor.taskTypes))
   for (const id of new Set([...Object.keys(before.sources), ...Object.keys(after.sources)])) changes.push(...sourceChanges(id, before.sources[id], after.sources[id], sources))
   return changes
 }
