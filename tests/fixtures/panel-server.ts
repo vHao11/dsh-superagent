@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
+import type { EngineCatalog } from '../../src/app/engine-models.ts'
+import type { EngineName } from '../../src/core/index.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
@@ -102,6 +104,8 @@ export interface PanelServer {
   health: Record<string, Health>
   /** The DSH model catalog the model pickers read; tests may replace it with another set of Providers. */
   models: ApiResponse<'GET models'>
+  /** One engine's catalog for the engine-aware picker; an engine not listed answers with the DSH catalog. */
+  engineModels?: Partial<Record<EngineName, EngineCatalog>>
   /** When set, `GET models` answers 500 with this error, as a host whose catalog cannot be read does. */
   modelsFailure?: string
   /** When true, all API requests return an empty 404 to simulate the host plugin being stopped. */
@@ -391,6 +395,14 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'POST policy-sync/:id': { answer: ({ params }) => ({ policy: server.settings.policy.sources[params.id] }) },
   'POST setup/check': { answer: () => ({ restarting: true }) },
   'GET models': { answer: () => server.modelsFailure ? refuse(500, server.modelsFailure) : server.models },
+  'GET engine-models': { query: ['engine'], answer: ({ query }) => {
+    const engine = (query.engine ?? 'dsh') as EngineName
+    const catalog = server.engineModels?.[engine]
+    if (catalog) return catalog
+    if (server.modelsFailure) return refuse(500, server.modelsFailure)
+    return { engine, groups: server.models.groups, default: server.models.default,
+      failures: server.models.failures, source: 'dsh' }
+  } },
   'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
   'PUT prompts': { body: true, answer: ({ body }) => {
     const { revision } = server.prompts

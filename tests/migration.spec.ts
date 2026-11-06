@@ -202,7 +202,7 @@ it('changes nothing when one step fails: the database stays at schema 10 as it w
     updatedAt: '2', mandate: mandate({ via: 'listed' }), meta: { sourceTriggerId: 'trig-1', workspace: '/w/fix-1' } }
   // The current settings must validate; an invalid value aborts the migration transaction.
   schema10(path, { settings: { executor: { maxWorkers: 'many' } } }, { ticket: [ticket] })
-  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 12 failed: the settings: /)
+  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 13 failed: the settings: /)
   const db = new DatabaseSync(path)
   expect(db.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: '10' })
   expect(JSON.parse(String(db.prepare("SELECT value FROM ticket WHERE id='t1'").get()!.value))).toMatchObject({ meta: { workspace: '/w/fix-1' } })
@@ -475,7 +475,7 @@ it('names the ticket it stopped at when a ticket does not read, and leaves the d
   const path = join(directory, 'db.sqlite')
   const { inputs: _inputs, ...broken } = ticket10('t9')
   schema10(path, {}, { ticket: [broken] })
-  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 12 failed: ticket t9: /)
+  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 13 failed: ticket t9: /)
   const db = new DatabaseSync(path)
   expect(db.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: '10' })
   expect(JSON.parse(String(db.prepare("SELECT value FROM ticket WHERE id='t9'").get()!.value))).toEqual(broken)
@@ -535,5 +535,39 @@ it('delivers the candidate of an Eval in progress at the upgrade again, so its d
   const store = new Store(path)
   const effects = store.db.prepare("SELECT key, value FROM effect WHERE kind = 'assessment'").all().map(row => [row.key, JSON.parse(String(row.value))])
   expect(effects).toEqual([['e9', { triggerId: 'issue-9' }]])
+  store.close()
+})
+
+it('moves the engine-specific model parameters into the shared execution model of a schema 12 database', () => {
+  const path = join(directory, 'db.sqlite')
+  new Store(path).close()
+  const db = new DatabaseSync(path)
+  const set = (name: string, value: unknown) => db.prepare('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    .run(name, JSON.stringify(value))
+  set('schema', 12)
+  set('settings-revision', 1)
+  const executor = { engine: 'opencode', opencodeModel: 'opencode-go/kimi-k3#high', opencodeAgent: 'build',
+    claudeModel: 'sonnet', claudeEffort: 'max',
+    taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:/w/native', engine: 'claude-code',
+      model: { provider: 'deepseek-account', model: 'deepseek-flash' },
+      claude: { model: 'opus', effort: 'low', permissionMode: 'plan', approval: 'ask', ultracode: true },
+      opencode: { model: 'ds/deepseek-flash', agent: 'plan', approval: 'deny', permissionPreset: 'safe', permissionRules: [] },
+      prepare: null, blockedCommands: null }] }
+  set('settings-version:1', { revision: 1, savedAt: '', source: 'panel', policyVersion: '', policyChanged: false, notified: [],
+    settings: { executor } })
+  db.close()
+
+  const store = new Store(path)
+  expect(store.settings().executor.model).toEqual({ provider: 'opencode-go', model: 'kimi-k3', reasoningEffort: 'high' })
+  const type = store.settings().executor.taskTypes[0]!
+  expect(type.model).toEqual({ provider: 'anthropic', model: 'opus', reasoningEffort: 'low' })
+  expect(type.claude).toEqual({ permissionMode: 'plan', approval: 'ask', ultracode: true })
+  expect(type.opencode).toEqual({ agent: 'plan', approval: 'deny', permissionPreset: 'safe', permissionRules: [] })
+  expect(store.settings().executor).not.toHaveProperty('opencodeModel')
+  expect(store.settings().executor).not.toHaveProperty('claudeModel')
+  // Historical revisions are rewritten too, so the history page can parse them with the current schema.
+  const history = store.get('settings-version:1') as { settings: { executor: Record<string, unknown> } }
+  expect(history.settings.executor).not.toHaveProperty('opencodeModel')
+  expect(history.settings.executor).not.toHaveProperty('claudeEffort')
   store.close()
 })

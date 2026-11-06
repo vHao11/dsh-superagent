@@ -11,7 +11,7 @@ import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import { BQA_MCP_SERVER, BQA_MCP_TOOL_NAMES } from '../sources/bqa.ts'
 import { attachClaudeCode } from '../executor/claude-code.ts'
 import { attachOpencode } from '../executor/opencode.ts'
-import { claudeSettingsForTicket, opencodeSettingsForTicket } from './executor-profile.ts'
+import { claudeSettingsForTicket, opencodeSettingsForTicket, ticketModel } from './executor-profile.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -307,26 +307,10 @@ export class Sessions {
     if (!master && !ticket) { this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
     this.bindings.set(agent, binding)
-    // Attach before the asynchronous prompt/skill/tool setup so a prompt that arrives while decoration runs cannot fall
-    // through to the DSH model loop. The report tool is looked up when a turn reports, by which time tool setup is done.
-    if (!master && ticket && this.engineOf(ticket) === 'claude-code') binding.disposers.push(attachClaudeCode({
-      context: this.ctx, agent, ticket, store: this.host.store,
-      // The Ticket's snapshotted Claude Code profile, so the driver reads type-level parameters over the global fallbacks.
-      settings: () => claudeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
-      environment: () => this.host.environment(ticket),
-    }))
-    // A native opencode worker runs its own ACP loop; mount it before the asynchronous setup so its step owns the turn.
-    if (!master && ticket && this.engineOf(ticket) === 'opencode') binding.disposers.push(attachOpencode({
-      context: this.ctx, agent, ticket, store: this.host.store,
-      settings: () => opencodeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
-      environment: () => this.host.environment(ticket),
-    }))
-    this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
-    if (agent.status === 'idle') this.retryHealth.clear(agent.id)
-    this.updateModelHealth()
-    // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
-    binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
-      const version = this.promptFor(agent, context.signal !== undefined)
+    // The worker prompt a DSH Session reads in its system prompt, and a native engine receives as its system/instruction
+    // text: one composition, so task-type instructions, the mandate and the communication policy cannot drift apart.
+    const instructionsFor = (bind: boolean): string => {
+      const version = this.promptFor(agent, bind)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
       const taskType = current?.execution?.taskType
@@ -335,7 +319,30 @@ export class Sessions {
       const typeInstructions = taskType ? current?.execution?.instructions ?? profile?.instructions ?? '' : ''
       const taskSection = taskType ? `\n\n## Task type\n${taskType}${profile ? ` (${profile.name})` : ''}${typeInstructions ? `\n${typeInstructions}` : ''}` : ''
       return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}${taskSection}`
-    }, ...(master ? { complete: true } : {}) }))
+    }
+    // Attach before the asynchronous prompt/skill/tool setup so a prompt that arrives while decoration runs cannot fall
+    // through to the DSH model loop. The report tool is looked up when a turn reports, by which time tool setup is done.
+    if (!master && ticket && this.engineOf(ticket) === 'claude-code') binding.disposers.push(attachClaudeCode({
+      context: this.ctx, agent, ticket, store: this.host.store,
+      // The Ticket's snapshotted Claude Code profile, so the driver reads type-level parameters over the global fallbacks.
+      settings: () => claudeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
+      environment: () => this.host.environment(ticket),
+      // The shared execution model and the worker instructions a DSH worker also reads, so both engines see one task text.
+      model: () => ticketModel(this.host.store.settings(), ticket), instructions: () => instructionsFor(true),
+    }))
+    // A native opencode worker runs its own ACP loop; mount it before the asynchronous setup so its step owns the turn.
+    if (!master && ticket && this.engineOf(ticket) === 'opencode') binding.disposers.push(attachOpencode({
+      context: this.ctx, agent, ticket, store: this.host.store,
+      settings: () => opencodeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
+      environment: () => this.host.environment(ticket),
+      model: () => ticketModel(this.host.store.settings(), ticket), instructions: () => instructionsFor(true),
+    }))
+    this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
+    if (agent.status === 'idle') this.retryHealth.clear(agent.id)
+    this.updateModelHealth()
+    // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
+    binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false,
+      text: context => instructionsFor(context.signal !== undefined), ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
       binding.scope = scope

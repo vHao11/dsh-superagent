@@ -279,6 +279,7 @@ const ROUTES: readonly Route[] = [
       body = report.summary
     } else if (part !== undefined) throw new Error('Unknown context resource')
     else if (section === 'assignment') body = ticket.execution?.assignment ?? ''
+    else if (section === 'scope') body = ticket.mandate.scope ?? ''
     else if (section === 'result') body = latestReport(ticket)?.summary ?? ''
     else if (section === 'transcript') {
       body = (await transcript(host, id)).flatMap((event, index) => {
