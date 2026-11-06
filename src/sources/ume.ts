@@ -5,6 +5,7 @@ import { isAbsolute, win32 } from 'node:path'
 import { z } from 'zod'
 import { key, type Trigger } from '../core/index.ts'
 import { KV } from '../kv.ts'
+import { ConversationModeSchema, conversationField } from './conversation.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
@@ -16,6 +17,8 @@ export const UmeConfigSchema = z.object({
   file: z.string().trim().min(1).refine(path => isAbsolute(path) || win32.isAbsolute(path), 'An absolute path')
     .default('D:/aiworkspace/ai-tools/ume-message-capture/data/tasks.json'),
   pollSeconds: z.number().int().min(5).max(300).default(60),
+  /** Names today's behavior explicitly: updates of one UME conversation continue one conversation. */
+  conversation: ConversationModeSchema.default('thread'),
 }).strict()
 export type UmeConfig = z.infer<typeof UmeConfigSchema>
 /** One triage row: the capture tool's own fields, kept loosely typed because the export is external. */
@@ -99,6 +102,7 @@ export const umeKind: SourceKind<UmeConfig> = {
     { key: 'file', type: 'text', label: { zh: '导出文件', en: 'Export file' },
       hint: { zh: 'ume-message-capture 的 data/tasks.json 绝对路径；文件缺失或格式错误时来源报错，不影响其他来源。',
         en: 'Absolute path of UME message-capture\'s data/tasks.json; a missing or malformed file makes this Source report an error without affecting others.' } },
+    conversationField('thread'),
     { key: 'pollSeconds', type: 'number', advanced: true, min: 5, max: 300, label: { zh: '检查间隔 / 秒', en: 'Check interval / seconds' },
       hint: { zh: '多久读一次导出文件；导出本身由计划任务每 10 分钟刷新。', en: 'How often to read the export; a scheduled task refreshes the export itself every ten minutes.' } },
   ],
