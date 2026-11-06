@@ -68,9 +68,11 @@ const ABSOLUTE_DIRECTORY = String.raw`(?:[A-Za-z]:(?:\\|/)|\\\\|/).*`
 type ExecutorView = SettingsView['blocks']['executor']['value']
 type TaskTypeView = ExecutorView['taskTypes'][number]
 type TaskTypeClaude = NonNullable<TaskTypeView['claude']>
+type TaskTypeOpencode = NonNullable<TaskTypeView['opencode']>
 type EngineName = NonNullable<TaskTypeView['engine']>
 type ExecutorFallback = Pick<ExecutorView, 'engine' | 'prepare' | 'blockedCommands' | 'claudeModel' | 'claudePermissionMode'
-  | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode'>
+  | 'claudeApproval' | 'claudeEffort' | 'claudeUltracode' | 'opencodeModel' | 'opencodeAgent' | 'opencodeApproval'
+  | 'opencodePermissionPreset'>
 /**
  * The task type as the form edits it: `blockedCommands` keeps the raw text (separators included) until save, where `null`
  * means inherit and `''` means an explicitly empty list. Older drafts may still carry the saved array, so both are accepted.
@@ -83,6 +85,12 @@ const CLAUDE_APPROVALS = ['ask', 'approve', 'deny'] as const
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const CLAUDE_INHERIT: TaskTypeClaude = { model: null, permissionMode: null, approval: null, effort: null, ultracode: null }
 const claudeOf = (type: TaskTypeDraft): TaskTypeClaude => ({ ...CLAUDE_INHERIT, ...type.claude })
+const OPENCODE_APPROVALS = ['ask', 'approve', 'deny', 'smart'] as const
+const OPENCODE_PRESETS = ['smart', 'safe', 'read-only', 'full', 'custom'] as const
+// The hidden `permissionRules` stays API-only (Phase 2); an inherited copy survives edits because every control fills the
+// object from this value and only replaces its own field.
+const OPENCODE_INHERIT: TaskTypeOpencode = { model: null, agent: null, approval: null, permissionPreset: null, permissionRules: null }
+const opencodeOf = (type: TaskTypeDraft): TaskTypeOpencode => ({ ...OPENCODE_INHERIT, ...type.opencode })
 /** The raw text of a type's blocked commands; a draft from an older version may still hold the saved array. */
 const blockedText = (value: TaskTypeDraft['blockedCommands'] | undefined): string =>
   Array.isArray(value) ? value.join(' ') : value ?? ''
@@ -142,6 +150,11 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
     const claude = { ...claudeOf(taskTypes[index]!), ...next }
     patch(index, { claude: Object.values(claude).every(value => value === null) ? null : claude })
   }
+  // The same inherited-object rule for the opencode parameters; the hidden permission rules ride along untouched.
+  const patchOpencode = (index: number, next: Partial<TaskTypeOpencode>) => {
+    const opencode = { ...opencodeOf(taskTypes[index]!), ...next }
+    patch(index, { opencode: Object.values(opencode).every(value => value === null) ? null : opencode })
+  }
   const insert = (key: string) => {
     if (!type) return
     const field = prepare.current
@@ -151,6 +164,7 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
     requestAnimationFrame(() => { field?.focus(); const caret = at + key.length + 3; field?.setSelectionRange(caret, caret) })
   }
   const claude = type ? claudeOf(type) : CLAUDE_INHERIT
+  const opencode = type ? opencodeOf(type) : OPENCODE_INHERIT
   const engine = type ? type.engine ?? executor.engine : executor.engine
   const prepareValue = type?.prepare ?? null
   const prepareHint = prepareValue === null ? executor.prepare ? t('taskTypePrepareInherit', { value: executor.prepare })
@@ -271,6 +285,35 @@ function TaskTypesEditor({ taskTypes, executor, groups, sources, onChange }: {
               <option value="off">{t('taskTypeClaudeOff')}</option>
             </select>
           </Field>
+        </Section>}
+        {engine === 'opencode' && <Section title={t('taskTypeOpencode')} hint={t('taskTypeOpencodeHint')}>
+          <Field label={t('taskTypeOpencodeModel')} hint={t('taskTypeOpencodeModelHint')}>
+            <Input className="dt-mono" value={opencode.model ?? ''} spellCheck={false}
+              placeholder={inheritValue(executor.opencodeModel || t('unsetValue'))}
+              onChange={event => patchOpencode(index, { model: event.target.value.trim() ? event.target.value : null })} />
+          </Field>
+          <Field label={t('taskTypeOpencodeAgent')} hint={t('taskTypeOpencodeAgentHint')}>
+            <Input className="dt-mono" value={opencode.agent ?? ''} spellCheck={false}
+              placeholder={inheritValue(executor.opencodeAgent || t('unsetValue'))}
+              onChange={event => patchOpencode(index, { agent: event.target.value.trim() ? event.target.value : null })} />
+          </Field>
+          <Field label={t('taskTypeOpencodeApproval')} hint={t('taskTypeOpencodeApprovalHint')}>
+            <select className="dt-select" value={opencode.approval ?? ''}
+              onChange={event => patchOpencode(index, { approval: event.target.value
+                ? event.target.value as TaskTypeOpencode['approval'] : null })}>
+              <option value="">{inheritValue(valueLabel(t, 'opencodeApproval', executor.opencodeApproval))}</option>
+              {OPENCODE_APPROVALS.map(choice => <option key={choice} value={choice}>{t(`opencodeApproval.${choice}`)}</option>)}
+            </select>
+          </Field>
+          <Field label={t('taskTypeOpencodePermissionPreset')} hint={t('taskTypeOpencodePermissionPresetHint')}>
+            <select className="dt-select" value={opencode.permissionPreset ?? ''}
+              onChange={event => patchOpencode(index, { permissionPreset: event.target.value
+                ? event.target.value as TaskTypeOpencode['permissionPreset'] : null })}>
+              <option value="">{inheritValue(valueLabel(t, 'opencodePreset', executor.opencodePermissionPreset))}</option>
+              {OPENCODE_PRESETS.map(preset => <option key={preset} value={preset}>{t(`opencodePreset.${preset}`)}</option>)}
+            </select>
+          </Field>
+          <Hint>{t('taskTypeOpencodePermissionRulesHidden')}</Hint>
         </Section>}
         <TaskField label={t('taskTypePrepare')} hint={t('prepareCommandHint')}
           actions={<>

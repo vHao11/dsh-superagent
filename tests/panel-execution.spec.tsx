@@ -224,9 +224,10 @@ it('renders the Execution settings as two cards and keeps the global fallback fi
   expect(all('.dt-block-title').map(title => title.textContent)).toEqual([zh.globalParameters, zh.taskTypes])
   expect(all('.dt-block')).toHaveLength(2)
   expect(text()).toContain(zh.fallbackHiddenHint)
-  // The fallback engine, prepare command, blocked commands and Claude Code parameters are API-only.
+  // The fallback engine, prepare command, blocked commands and Claude Code / opencode parameters are API-only.
   for (const label of [zh.executorEngine, zh.prepareCommand, zh.blockedCommands, zh.claudeBin, zh.claudeModel,
-    zh.claudePermissionMode, zh.claudeApproval, zh.claudeEffort, zh.claudeUltracode]) expect(hasField(label)).toBe(false)
+    zh.claudePermissionMode, zh.claudeApproval, zh.claudeEffort, zh.claudeUltracode, zh.opencodeBin, zh.opencodeModel,
+    zh.opencodeAgent, zh.opencodeApproval, zh.opencodePermissionPreset]) expect(hasField(label)).toBe(false)
   // The legacy executor directory shows only while no task type exists.
   expect(hasField(zh.executionDirectory)).toBe(false)
   expect(hasField(zh.directoryMode)).toBe(false)
@@ -302,6 +303,62 @@ it('edits the per-type Claude Code parameters, each inheriting the global fallba
   expect(server.settings.executor.taskTypes[0]!.claude).toBeNull()
 })
 
+it('shows the opencode parameters for the effective opencode engine, each inheriting the global fallback until set', async () => {
+  const types = seededTaskTypes()
+  types[0] = { ...types[0]!, engine: 'opencode' }
+  types[1] = { ...types[1]!, engine: 'claude-code' }
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, engine: 'dsh', opencodeModel: 'global/model',
+    opencodeAgent: 'global-agent', opencodeApproval: 'ask', opencodePermissionPreset: 'safe', taskTypes: types } }
+  at({ page: 'settings', query: { group: 'execution' } })
+  await mount()
+  expect(hasField(zh.taskTypeClaudeModel)).toBe(false)
+  expect(field<HTMLInputElement>(zh.taskTypeOpencodeModel).placeholder)
+    .toBe(zh.taskTypeInheritGlobalValue.replace('{value}', 'global/model'))
+  expect(field<HTMLInputElement>(zh.taskTypeOpencodeAgent).placeholder)
+    .toBe(zh.taskTypeInheritGlobalValue.replace('{value}', 'global-agent'))
+  expect(field<HTMLSelectElement>(zh.taskTypeOpencodeApproval).options[0]!.textContent)
+    .toBe(zh.taskTypeInheritGlobalValue.replace('{value}', zh['opencodeApproval.ask']))
+  expect(field<HTMLSelectElement>(zh.taskTypeOpencodePermissionPreset).options[0]!.textContent)
+    .toBe(zh.taskTypeInheritGlobalValue.replace('{value}', zh['opencodePreset.safe']))
+  expect(text()).toContain(zh.taskTypeOpencodePermissionRulesHidden)
+  // The section follows the effective engine: another type on Claude Code shows no opencode parameters.
+  await type(field<HTMLSelectElement>(zh.taskTypeSelect), '1')
+  expect(hasField(zh.taskTypeOpencodeModel)).toBe(false)
+  expect(hasField(zh.taskTypeClaudeModel)).toBe(true)
+  await type(field<HTMLSelectElement>(zh.taskTypeSelect), '0')
+  await type(field<HTMLInputElement>(zh.taskTypeOpencodeModel), 'type/model')
+  await type(field<HTMLInputElement>(zh.taskTypeOpencodeAgent), 'build')
+  await type(field<HTMLSelectElement>(zh.taskTypeOpencodeApproval), 'deny')
+  await type(field<HTMLSelectElement>(zh.taskTypeOpencodePermissionPreset), 'full')
+  await click(zh.save)
+  expect(server.settings.executor.taskTypes[0]!.opencode).toEqual({ model: 'type/model', agent: 'build', approval: 'deny',
+    permissionPreset: 'full', permissionRules: null })
+  await remount()
+  expect(field<HTMLInputElement>(zh.taskTypeOpencodeModel).value).toBe('type/model')
+  expect(field<HTMLSelectElement>(zh.taskTypeOpencodeApproval).value).toBe('deny')
+  // Inheriting every parameter again saves no object at all.
+  await type(field<HTMLInputElement>(zh.taskTypeOpencodeModel), '')
+  await type(field<HTMLInputElement>(zh.taskTypeOpencodeAgent), '')
+  await type(field<HTMLSelectElement>(zh.taskTypeOpencodeApproval), '')
+  await type(field<HTMLSelectElement>(zh.taskTypeOpencodePermissionPreset), '')
+  await click(zh.save)
+  expect(server.settings.executor.taskTypes[0]!.opencode).toBeNull()
+})
+
+it('shows the opencode parameters for the global opencode engine inherited by a type, and keeps them across engine switches', async () => {
+  const types = seededTaskTypes()
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, engine: 'opencode', taskTypes: types } }
+  at({ page: 'settings', query: { group: 'execution' } })
+  await mount()
+  expect(hasField(zh.taskTypeOpencodeModel)).toBe(true)
+  await type(field<HTMLInputElement>(zh.taskTypeOpencodeModel), 'type/model')
+  // Switching to another engine only hides the group; the entered parameters stay in the draft.
+  await type(field<HTMLSelectElement>(zh.taskTypeEngine), 'claude-code')
+  expect(hasField(zh.taskTypeOpencodeModel)).toBe(false)
+  await type(field<HTMLSelectElement>(zh.taskTypeEngine), 'opencode')
+  expect(field<HTMLInputElement>(zh.taskTypeOpencodeModel).value).toBe('type/model')
+})
+
 it('inherits or explicitly disables the prepare command per type, and says a fixed type never runs it', async () => {
   server.settings = { ...server.settings, executor: { ...server.settings.executor, prepare: 'global-prep',
     taskTypes: seededTaskTypes() } }
@@ -357,7 +414,9 @@ it('keeps per-type blocked commands as typed until save, with explicit inherit a
 it('saves the hidden global fallback values unchanged and changes only the field the two cards edit', async () => {
   server.settings = { ...server.settings, executor: { ...server.settings.executor, engine: 'claude-code', prepare: 'global-prep',
     blockedCommands: ['global-cli'], claudeBin: '/opt/claude', claudeModel: 'global-model', claudePermissionMode: 'plan',
-    claudeApproval: 'ask', claudeEffort: 'high', claudeUltracode: true, taskTypes: seededTaskTypes() } }
+    claudeApproval: 'ask', claudeEffort: 'high', claudeUltracode: true, opencodeBin: '/opt/opencode', opencodeModel: 'global/opencode',
+    opencodeAgent: 'build', opencodeApproval: 'deny', opencodePermissionPreset: 'full',
+    opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'ask' }], taskTypes: seededTaskTypes() } }
   at({ page: 'settings', query: { group: 'execution' } })
   const before = JSON.parse(JSON.stringify(server.settings.executor)) as Settings['executor']
   await mount()
@@ -370,7 +429,9 @@ it('saves the hidden global fallback values unchanged and changes only the field
   // The saved read-back keeps them too.
   expect(server.settings.executor).toMatchObject({ engine: 'claude-code', prepare: 'global-prep', blockedCommands: ['global-cli'],
     claudeBin: '/opt/claude', claudeModel: 'global-model', claudePermissionMode: 'plan', claudeApproval: 'ask',
-    claudeEffort: 'high', claudeUltracode: true, maxWorkers: 4 })
+    claudeEffort: 'high', claudeUltracode: true, opencodeBin: '/opt/opencode', opencodeModel: 'global/opencode',
+    opencodeAgent: 'build', opencodeApproval: 'deny', opencodePermissionPreset: 'full',
+    opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'ask' }], maxWorkers: 4 })
 })
 
 it('words task-type changes in the Execution settings history with localized field names', async () => {
