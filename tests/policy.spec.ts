@@ -257,6 +257,7 @@ describe('settings migration', () => {
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' }, batches: {} },
       executor: { engine: 'dsh', model: null, maxWorkers: 5, directory: '', directoryMode: 'per-ticket', prepare: '', blockedCommands: [],
         claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
+        opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart', opencodePermissionRules: [],
         taskTypes: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)

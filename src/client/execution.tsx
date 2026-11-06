@@ -72,7 +72,7 @@ function blankTaskType(taskTypes: TaskTypeDraft[]): TaskTypeDraft {
   let serial = taskTypes.length + 1
   while (taskTypes.some(type => type.id === `custom-${serial}`)) serial++
   return { id: `custom-${serial}`, name: '', description: '', examples: [], not: [], directory: '', model: null,
-    directoryMode: 'fixed', instructions: '', readOnly: false }
+    directoryMode: 'fixed', instructions: '', readOnly: false, engine: null, claude: null, opencode: null, prepare: null, blockedCommands: null }
 }
 /**
  * Editor for the user-defined task types. The sorter only picks an id; every directory, model and instruction here is

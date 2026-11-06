@@ -32,9 +32,10 @@ export const KV = {
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
-  /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision; and a native engine's state, whose Claude Code session id lets a new process resume the same conversation. */
+  /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision; and each native engine's state, whose session id lets a new process resume the same conversation (`opencode` also keeps the cwd its ACP session was created in). */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:'),
-    claude: family<{ engine: EngineName; sessionId?: string }, [session: string]>('session-claude:') },
+    claude: family<{ engine: EngineName; sessionId?: string }, [session: string]>('session-claude:'),
+    opencode: family<{ engine: EngineName; sessionId?: string; cwd?: string }, [session: string]>('session-opencode:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

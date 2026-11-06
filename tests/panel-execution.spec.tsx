@@ -9,11 +9,14 @@ import type { Settings } from '../src/client/api.ts'
 
 const seededTaskTypes = (): Settings['executor']['taskTypes'] => [
   { id: 'env-fix', name: '环境修复类问题', description: '修复构建环境与依赖问题', examples: [], not: [], directory: '/srv/work/env-fix',
-    model: null, directoryMode: 'fixed', instructions: '', readOnly: false },
+    model: null, directoryMode: 'fixed', instructions: '', readOnly: false, engine: null, claude: null, opencode: null, prepare: null,
+    blockedCommands: null },
   { id: 'jzjy', name: '集中交易类问题', description: '集中交易相关的问题修复', examples: [], not: [], directory: '/srv/work/jzjy',
-    model: null, directoryMode: 'fixed', instructions: '', readOnly: false },
+    model: null, directoryMode: 'fixed', instructions: '', readOnly: false, engine: null, claude: null, opencode: null, prepare: null,
+    blockedCommands: null },
   { id: 'zrt', name: '转融通系统问题', description: '转融通系统相关的问题修复', examples: [], not: [], directory: '/srv/work/zrt',
-    model: null, directoryMode: 'fixed', instructions: '', readOnly: false },
+    model: null, directoryMode: 'fixed', instructions: '', readOnly: false, engine: null, claude: null, opencode: null, prepare: null,
+    blockedCommands: null },
 ]
 
 usePanel()

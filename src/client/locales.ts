@@ -339,6 +339,7 @@ const TEXT = {
   executorEngineHint: ['选择 DeepSeek Harness 原生循环，或每张工单一个持久的原生 Claude Code 进程。已有工单保持接单时记录的引擎。', 'Use DeepSeek Harness\'s native loop, or one persistent native Claude Code process per Ticket. Existing Tickets keep the engine recorded when they were accepted.'],
   'engine.dsh': ['DSH 原生', 'DSH native'],
   'engine.claude-code': ['Claude Code', 'Claude Code'],
+  'engine.opencode': ['opencode', 'opencode'],
   claudeBin: ['Claude Code 可执行文件', 'Claude Code executable'],
   claudeBinHint: ['留空时依次查找 CLAUDE_CODE_BIN、用户安装目录和 PATH。', 'Empty resolves CLAUDE_CODE_BIN, the per-user install, then PATH.'],
   claudeModel: ['Claude Code 模型', 'Claude Code model'],

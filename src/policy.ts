@@ -80,7 +80,33 @@ export type RoleModel = z.infer<typeof RoleModelSchema>
 
 /** Check an absolute path on either the running platform or Windows, so a saved Windows deployment stays readable elsewhere. */
 const absolutePath = (path: string): boolean => isAbsolute(path) || win32.isAbsolute(path)
+/** One ordered opencode permission rule: later rules win, and no match asks a person. */
+export const PermissionRuleSchema = z.object({ action: z.string().trim().min(1).max(64),
+  resource: z.string().max(4000).default(''), effect: z.enum(['allow', 'deny', 'ask']) }).strict()
+/** How the bridge answers an opencode permission request; `smart` allows read-only calls and asks a person for anything that writes, executes or leaves the workspace. */
+export const OpencodeApprovalSchema = z.enum(['ask', 'approve', 'deny', 'smart'])
+/** The opencode permission preset a worker starts from; Phase 1 applies it to opencode's own global configuration. */
+export const OpencodePermissionPresetSchema = z.enum(['smart', 'safe', 'read-only', 'full', 'custom'])
+/** The Claude Code parameters a task type can set; each null field inherits the executor's fallback, and the whole object is null when the type sets none. */
+export const TaskTypeClaudeSchema = z.object({
+  model: z.string().trim().max(200).nullable().default(null),
+  permissionMode: z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']).nullable().default(null),
+  approval: z.enum(['ask', 'approve', 'deny']).nullable().default(null),
+  effort: z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max']).nullable().default(null),
+  ultracode: z.boolean().nullable().default(null),
+}).strict()
+/** The opencode parameters a task type can set (Phase 1: model, agent, approval and the global permission preset); each null inherits the executor's fallback. */
+export const TaskTypeOpencodeSchema = z.object({
+  model: z.string().trim().max(200).nullable().default(null),
+  agent: z.string().trim().max(64).nullable().default(null),
+  approval: OpencodeApprovalSchema.nullable().default(null),
+  permissionPreset: OpencodePermissionPresetSchema.nullable().default(null),
+  permissionRules: z.array(PermissionRuleSchema).max(64).nullable().default(null),
+}).strict()
 export const TaskTypeIdSchema = z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes, starting with a letter')
+/** A command name a person can block; the shims and the worker's own commands cannot be blocked. */
+const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
+  .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
 /** One user-defined task type and the worker profile its tickets run with. */
 export const TaskTypeSchema = z.object({
   id: TaskTypeIdSchema,
@@ -102,6 +128,16 @@ export const TaskTypeSchema = z.object({
   readOnly: z.boolean().default(false),
   /** Reserved for per-type concurrency; not enforced yet. */
   maxConcurrent: z.number().int().min(1).max(LIMITS.maxWorkers.max).optional(),
+  /** The worker engine of this type's Tickets; null inherits `executor.engine`. */
+  engine: z.enum(ENGINE_NAMES).nullable().default(null),
+  /** The Claude Code profile of this type; null, or a null field, inherits the executor's fallback. */
+  claude: TaskTypeClaudeSchema.nullable().default(null),
+  /** The opencode profile of this type (W2); null, or a null field, inherits the executor's fallback and opencode's own configuration. */
+  opencode: TaskTypeOpencodeSchema.nullable().default(null),
+  /** The prepare command of this type; null inherits `executor.prepare`, and '' runs none. Only `per-ticket` types run it. */
+  prepare: z.string().max(LIMITS.prepareCommand).nullable().default(null),
+  /** The blocked commands this type declares; null inherits `executor.blockedCommands`, and [] declares none (see docs/003). */
+  blockedCommands: z.array(CommandNameSchema).nullable().default(null),
 }).strict()
 export type TaskType = z.infer<typeof TaskTypeSchema>
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict()
@@ -132,18 +168,13 @@ export const EvalConfigSchema = z.object({
 }).strict()
 /** The batch settings of `source`, or undefined when it delivers each candidate immediately. */
 export const evalBatch = (settings: Pick<Settings, 'eval'>, source: string): EvalBatch | undefined => settings.eval.batches[source]
-const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
-  .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
 /** Claude Code permission modes, as the CLI names them: `default` is Manual, `acceptEdits` is Edit automatically. */
 export const ClaudePermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
-export type ClaudePermissionMode = z.infer<typeof ClaudePermissionModeSchema>
 /** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
 export const ClaudeApprovalSchema = z.enum(['ask', 'approve', 'deny'])
-export type ClaudeApproval = z.infer<typeof ClaudeApprovalSchema>
 /** Reasoning effort passed as `--effort`; empty keeps the CLI's own level for the model. */
 export const ClaudeEffortSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max'])
-export type ClaudeEffort = z.infer<typeof ClaudeEffortSchema>
-/** Executor settings: worker engine and model, concurrency, ticket directory root and mode, `prepare` command, blocked commands, and the native Claude Code executable, model, permission mode, effort and approval handling. */
+/** Executor settings: worker engine and model, concurrency, ticket directory root and mode, `prepare` command, blocked commands, the native Claude Code executable and its defaults, and the opencode fallbacks the panel hides. */
 export const ExecutorConfigSchema = z.object({
   engine: z.enum(ENGINE_NAMES).default('dsh'),
   model: RoleModelSchema.nullable().default(null),
@@ -165,7 +196,13 @@ export const ExecutorConfigSchema = z.object({
   claudeEffort: ClaudeEffortSchema.default(''),
   /** Turn on Claude Code's dynamic workflows; passed as `{"ultracode":true}` in `--settings`. */
   claudeUltracode: z.boolean().default(false),
-  /** User-defined task types; each binds a Ticket's directory, model, mode and worker instructions. Empty keeps the legacy single-directory executor. */
+  /** opencode fallbacks, API-only (the panel hides them in favor of the task type): the model and agent a type inherits, and the approval preset. */
+  opencodeModel: z.string().trim().max(200).default(''),
+  opencodeAgent: z.string().trim().max(64).default(''),
+  opencodeApproval: OpencodeApprovalSchema.default('smart'),
+  opencodePermissionPreset: OpencodePermissionPresetSchema.default('smart'),
+  opencodePermissionRules: z.array(PermissionRuleSchema).max(64).default([]),
+  /** User-defined task types; each binds a Ticket's directory, model, mode, worker instructions and execution profile. Empty keeps the legacy single-directory executor. */
   taskTypes: z.array(TaskTypeSchema).max(24).default([]),
 }).strict().superRefine((value, ctx) => {
   const ids = new Set<string>()
