@@ -18,8 +18,7 @@ import { ToolCallId, createAssistantMessage, createToolResultMessage, type Conte
 import type { EpochHeader, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { EngineName, Ticket } from '../core/index.ts'
 import { KV } from '../kv.ts'
-import type { Settings } from '../policy.ts'
-import type { RoleModel } from '../policy.ts'
+import type { RoleModel, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import {
   ASK_TOOL, ASK_TOOL_SCHEMA, BRIDGE_PROMPT, CardResources, INTERRUPT_WAIT_MS, abortError, asString, delay, isRecord,

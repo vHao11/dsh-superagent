@@ -169,8 +169,6 @@ export const evalBatch = (settings: Pick<Settings, 'eval'>, source: string): Eva
 export const ClaudePermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
 /** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
 export const ClaudeApprovalSchema = z.enum(['ask', 'approve', 'deny'])
-/** Reasoning effort levels a native engine's catalog may offer; a model can also accept another value, so the picker keeps a saved one. */
-export const NativeEffortSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh', 'max'])
 /** Executor settings: worker engine and model, concurrency, ticket directory root and mode, `prepare` command, blocked commands, the native Claude Code executable and its defaults, and the opencode fallbacks the panel hides. */
 export const ExecutorConfigSchema = z.object({
   engine: z.enum(ENGINE_NAMES).default('dsh'),
