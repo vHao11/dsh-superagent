@@ -43,11 +43,12 @@ function harness(options: { answers?: unknown[]; stored?: { sessionId?: string; 
   }
   const servers: FakeAcpServer[] = []
   const spawnArgs: string[][] = []
+  const commands: string[] = []
   const spawnOptions: SpawnOptions[] = []
   const spawn = (command: string, args: readonly string[], spawnOptionsIn: SpawnOptions) => {
-    void command
     const server = new FakeAcpServer(options.script ?? {})
     servers.push(server)
+    commands.push(command)
     spawnArgs.push([...args])
     spawnOptions.push(spawnOptionsIn)
     return server.child as unknown as ChildProcessWithoutNullStreams
@@ -64,7 +65,7 @@ function harness(options: { answers?: unknown[]; stored?: { sessionId?: string; 
   } as unknown as OpencodeOptions)
   const detach = driver.attach()
   return {
-    directory, events, execute, ask, agent, store, servers, spawnArgs, spawnOptions, driver, detach,
+    directory, events, execute, ask, agent, store, servers, spawnArgs, commands, spawnOptions, driver, detach,
     get server() { return servers.at(-1)! },
   }
 }
@@ -288,6 +289,14 @@ describe('native opencode driver session and cancellation', () => {
     expect(modeAt).toBeGreaterThan(modelAt)
     expect(test.server.process.written('session/set_config_option')[0]!.params).toMatchObject({ configId: 'model', value: 'ds/deepseek-flash' })
     expect(test.server.process.written('session/set_mode')[0]!.params).toMatchObject({ modeId: 'plan' })
+    test.detach()
+  })
+
+  it('spawns the executable configured as the executor\'s opencodeBin before OPENCODE_BIN and the install', async () => {
+    const test = harness({ stored: false, executor: { opencodeBin: 'C:/tools/opencode.exe' },
+      script: { prompt: server => server.promptResponse('end_turn') } })
+    await expect(test.agent.step(decision(new AbortController().signal))).resolves.toEqual({ kind: 'completed' })
+    expect(test.commands[0]).toBe('C:/tools/opencode.exe')
     test.detach()
   })
 

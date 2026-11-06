@@ -186,6 +186,8 @@ export const ExecutorConfigSchema = z.object({
   blockedCommands: z.array(CommandNameSchema).default([]),
   /** The `claude` executable; empty resolves `CLAUDE_CODE_BIN`, the per-user install, then PATH. */
   claudeBin: z.string().trim().default(''),
+  /** The opencode executable; empty resolves `OPENCODE_BIN`, the Windows npm global install, then PATH. */
+  opencodeBin: z.string().trim().default(''),
   /** The Claude Code model id; empty keeps the CLI's own selection. */
   claudeModel: z.string().trim().max(200).default(''),
   /** The mode Claude Code starts in; `auto` reviews actions with its classifier, `bypassPermissions` skips its checks. */

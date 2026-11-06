@@ -187,7 +187,7 @@ describe('opencode session and executable resolution', () => {
   })
   it('keeps the schema defaults the panel will expose later', () => {
     const settings = ExecutorConfigSchema.parse({})
-    expect(settings).toMatchObject({ opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart' })
+    expect(settings).toMatchObject({ opencodeBin: '', opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart' })
     expect(TaskTypeSchema.parse({ id: 'native', name: 'Native', description: 'Native work.', directory: 'C:\\w\\native' }).opencode).toBeNull()
   })
 })

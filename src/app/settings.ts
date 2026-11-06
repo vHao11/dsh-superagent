@@ -24,7 +24,7 @@ const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, worker engines, the native Claude Code/opencode executables and parameters, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.directoryMode, executor.prepare,
   executor.blockedCommands, executor.engine, executor.claudeBin, executor.claudeModel, executor.claudePermissionMode,
-  executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode,
+  executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode, executor.opencodeBin,
   executor.opencodeModel, executor.opencodeAgent, executor.opencodeApproval, executor.opencodePermissionPreset,
   executor.opencodePermissionRules,
   // Every task type carries its own execution profile, which a non-panel origin must not change either.

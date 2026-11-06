@@ -3,7 +3,7 @@ import { SettingsSchema, TaskTypeSchema, assessmentOutcome, classifyTaskType, po
   anyoneAllowed, unclassifiedTaskTypeError, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
-import { deploymentBlockedCommands, executorProfile } from '../src/app/executor-profile.ts'
+import { deploymentBlockedCommands, executorProfile, opencodeSettingsForTicket } from '../src/app/executor-profile.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -257,7 +257,7 @@ describe('settings migration', () => {
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' }, batches: {} },
       executor: { engine: 'dsh', model: null, maxWorkers: 5, directory: '', directoryMode: 'per-ticket', prepare: '', blockedCommands: [],
-        claudeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
+        claudeBin: '', opencodeBin: '', claudeModel: '', claudePermissionMode: 'auto', claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false,
         opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart', opencodePermissionRules: [],
         taskTypes: [] },
     })
@@ -568,6 +568,27 @@ describe('task type execution profile', () => {
     expect(executorProfile(settings, TaskTypeSchema.parse({ id: 'plain', name: 'Plain', description: 'Plain work.',
       directory: 'D:\\w\\plain' }))).toEqual(inherited)
     expect(executorProfile(settings, undefined)).toEqual(inherited)
+  })
+  it('resolves a worker\'s opencode profile from the Ticket snapshot, then its type, then the global fallback', () => {
+    const settings = SettingsSchema.parse({ executor: { opencodeModel: 'global/model', opencodeAgent: 'global-agent',
+      opencodeApproval: 'ask', opencodePermissionPreset: 'safe',
+      opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'deny' }],
+      taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'D:\\w\\native', engine: 'opencode',
+        opencode: { model: 'type/model', approval: 'smart' } }] } })
+    const ticket = (execution: Record<string, unknown> = {}): Ticket => ({ execution: { name: 'native-1', directory: 'D:\\w\\native',
+      assignment: '', ...execution } }) as Ticket
+    // A Ticket accepted before the snapshot existed resolves its type over the global fallback, field by field.
+    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({ opencodeModel: 'type/model',
+      opencodeAgent: 'global-agent', opencodeApproval: 'smart', opencodePermissionPreset: 'safe',
+      opencodePermissionRules: [{ action: 'shell', resource: 'git push *', effect: 'deny' }] })
+    // The snapshot wins whole over both the type and the global fallback.
+    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native', engineOptions: { opencode: { model: 'snap/model',
+      agent: 'plan', approval: 'deny', permissionPreset: 'full', permissionRules: [] } } }))).toMatchObject({
+      opencodeModel: 'snap/model', opencodeAgent: 'plan', opencodeApproval: 'deny', opencodePermissionPreset: 'full',
+      opencodePermissionRules: [] })
+    // No type at all (legacy Ticket) resolves the global fallback.
+    expect(opencodeSettingsForTicket(settings, ticket())).toMatchObject({ opencodeModel: 'global/model', opencodeAgent: 'global-agent',
+      opencodeApproval: 'ask', opencodePermissionPreset: 'safe' })
   })
   it('enforces the union of the executor\'s blocked commands and every type\'s declared list', () => {
     const settings = SettingsSchema.parse({ executor: { blockedCommands: ['global-cli', 'shared-cli'],

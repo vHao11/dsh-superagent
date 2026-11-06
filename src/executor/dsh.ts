@@ -186,10 +186,15 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const engineSource: NonNullable<Execution['engineSource']> = outcome.engine ? 'explicit'
     : choice.source !== 'legacy' && choice.type.engine ? 'type' : 'global'
   // The resolved profile is snapshotted with the Ticket, so a later settings edit does not move its in-flight execution.
+  // The opencode profile rides in `engineOptions` only when that engine runs the Ticket; the driver then reads this snapshot
+  // before the type and global fallbacks (plan §5.5), while the claude parameters stay available for a later retry.
   const claude = profile.claude
+  const opencode = profile.opencode
   const snapshot = { engine, engineSource, prepare: profile.prepare, blockedCommands: profile.blockedCommands,
     claude: { model: claude.model, permissionMode: claude.permissionMode, approval: claude.approval, effort: claude.effort,
-      ultracode: claude.ultracode } }
+      ultracode: claude.ultracode },
+    ...(engine === 'opencode' ? { engineOptions: { opencode: { model: opencode.model, agent: opencode.agent, approval: opencode.approval,
+      permissionPreset: opencode.permissionPreset, permissionRules: [...opencode.permissionRules] } } } : {}) }
   // Without task types the legacy executor directory applies unchanged.
   if (choice.source === 'legacy')
     return { name, directory: settings.executor.directoryMode === 'fixed' ? root : join(root, name), assignment, ...snapshot }

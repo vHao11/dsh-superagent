@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import type { Trigger } from '../src/core/index.ts'
 import { TaskTypeSchema } from '../src/policy.ts'
+import { opencodeSettingsForTicket } from '../src/app/executor-profile.ts'
 import { workToolsFor } from '../src/app/sessions.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
@@ -221,6 +222,45 @@ describe('task types', () => {
       taskTypes: [type({ id: 'plain', name: 'Plain', directory: join(h.directory, 'plain') })] } })
     const inherited = await accept(feishu('20', '@bot plain work'), 'plain')
     expect(inherited.execution).toMatchObject({ engine: 'dsh', engineSource: 'global' })
+  })
+
+  it('snapshots the type\'s opencode profile and keeps an in-flight Ticket on it after a settings edit', async () => {
+    const settings = h.runtime.store.settings()
+    const rule = { action: 'shell', resource: 'git push *', effect: 'deny' as const }
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'dsh', opencodeModel: 'global/model',
+      opencodeAgent: 'global-agent', opencodeApproval: 'ask', opencodePermissionPreset: 'safe', opencodePermissionRules: [rule],
+      taskTypes: [type({ id: 'native', name: 'Native', directory: join(h.directory, 'native'), engine: 'opencode',
+        opencode: { model: 'type/model', agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } })] } })
+
+    const ticket = await accept(feishu('22', '@bot native work'), 'native')
+
+    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'type', engineOptions: { opencode: {
+      model: 'type/model', agent: 'build', approval: 'deny', permissionPreset: 'full', permissionRules: [rule] } } })
+    // A later settings edit does not move the in-flight Ticket: the driver reads the snapshot before the type and global values.
+    h.runtime.store.saveSettings({ ...h.runtime.store.settings(), executor: { ...h.runtime.store.settings().executor,
+      opencodeModel: 'moved/model', opencodeAgent: 'moved-agent', opencodeApproval: 'approve', opencodePermissionPreset: 'read-only',
+      opencodePermissionRules: [] } })
+    const after = h.runtime.store.tickets.get(ticket.id)!
+    expect(after.execution!.engineOptions!.opencode).toEqual({ model: 'type/model', agent: 'build', approval: 'deny',
+      permissionPreset: 'full', permissionRules: [rule] })
+    expect(opencodeSettingsForTicket(h.runtime.store.settings(), after)).toMatchObject({ opencodeModel: 'type/model',
+      opencodeAgent: 'build', opencodeApproval: 'deny', opencodePermissionPreset: 'full', opencodePermissionRules: [rule] })
+    // A Ticket on another engine carries no opencode options.
+    h.runtime.store.saveSettings({ ...h.runtime.store.settings(), executor: { ...h.runtime.store.settings().executor, engine: 'dsh',
+      taskTypes: [type({ id: 'plain', name: 'Plain', directory: join(h.directory, 'plain') })] } })
+    const plain = await accept(feishu('23', '@bot plain work'), 'plain')
+    expect(plain.execution).not.toHaveProperty('engineOptions')
+  })
+
+  it('snapshots the global opencode fallbacks for a legacy Ticket when the executor runs opencode', async () => {
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, engine: 'opencode', opencodeModel: 'global/model',
+      opencodeAgent: 'plan', opencodeApproval: 'deny', opencodePermissionPreset: 'read-only' } })
+
+    const ticket = await accept(feishu('24', '@bot fix this'))
+
+    expect(ticket.execution).toMatchObject({ engine: 'opencode', engineSource: 'global', engineOptions: { opencode: {
+      model: 'global/model', agent: 'plan', approval: 'deny', permissionPreset: 'read-only', permissionRules: [] } } })
   })
 
   it('snapshots the executor fallbacks for a legacy Ticket, and an older Ticket resolves its profile when it runs', async () => {

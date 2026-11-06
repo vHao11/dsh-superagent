@@ -268,9 +268,9 @@ export function sameCwd(left: string, right: string): boolean {
 }
 
 /**
- * Resolve the opencode executable: the configured path (when a build has one), `OPENCODE_BIN`, the Windows npm global
- * install, then PATH. It never returns the `.cmd` wrapper: that needs a shell and widens the injection surface.
- * @param configured - An explicit executable path; empty falls back to the environment and the install.
+ * Resolve the opencode executable: the executor's `opencodeBin` setting, `OPENCODE_BIN`, the Windows npm global install,
+ * then PATH. It never returns the `.cmd` wrapper: that needs a shell and widens the injection surface.
+ * @param configured - The executor's `opencodeBin` setting; empty falls back to the environment and the install.
  * @returns A path or command name for `spawn`.
  */
 export function resolveOpencodeBin(configured = ''): string {
@@ -475,7 +475,7 @@ export class OpencodeDriver {
     if (this.child) return
     if (this.disposed) throw new Error('The native opencode worker is disposed')
     const settings = this.readSettings()
-    const bin = resolveOpencodeBin()
+    const bin = resolveOpencodeBin(settings.opencodeBin)
     const cwd = this.ticket.execution?.directory ?? process.cwd()
     const env: NodeJS.ProcessEnv = { ...process.env, OPENCODE_DISABLE_AUTOUPDATE: '1' }
     try {
