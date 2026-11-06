@@ -24,7 +24,14 @@
 
 .NOTES
   The task runs as the current user. Registering it may require an elevated shell depending on local policy. The wrapper in
-  the temp directory hides the PowerShell window with `wscript.exe //B`, which the UME ingest case verified.
+  the per-user directory hides the PowerShell window with `wscript.exe //B`, which the UME ingest case verified.
+
+  The capture tool injects an exporter DLL into the running UME client, and its own docs treat that as an on-demand one-shot
+  export rather than a resident mechanism. A repeated 10-minute refresh can therefore hit its known DETACH stall: the export
+  data lands in the temp export database, but the completion marker never appears and one client database connection can stay
+  wedged, so later runs can no longer copy `messages` until the client process restarts. `scripts/export.ps1` therefore also
+  accepts an export database that is already complete when the marker is missing, and reports it. After a stall the task keeps
+  failing at the same point: restart the UME client once (closing and reopening it), then the next run exports normally again.
 #>
 param(
   [ValidateSet('install', 'uninstall')][string]$Action = 'install',
