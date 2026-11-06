@@ -6,6 +6,7 @@ import { UserError } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
+import { retrievalCallsFromEvents, usageFromEvents } from '../src/executor/dsh.ts'
 import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
 import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
@@ -462,6 +463,48 @@ it('relays a worker\'s report with its ticket card and the start of its summary,
   expect(report.ticket).not.toHaveProperty('preview')
   // The end of the ticket, which the ready report brought, comes with its card.
   expect(notices().at(-1)).toMatchObject({ ticket_ended: { ticket_id: ticket.id, state: 'completed' } })
+})
+
+it('records the worker Session token usage and retrieval evidence on its report and ticket resource', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  const events = h.sessionEvents.get(sessionId)!
+  const retrieval = { retrieval_id: 'retrieval-1', corpus_release_id: 'release-1', sources: [{ source_id: 'src-1' }] }
+  events.push(
+    { type: 'assistant/message', data: { usage: { inputTokens: 120, outputTokens: 80, cacheReadTokens: 5, cacheWriteTokens: 7 } } },
+    { type: 'assistant/message', data: { usage: { inputTokens: 30, outputTokens: 20 } } },
+    { type: 'tool/call', data: { callId: 'call-1', name: 'mcp__bqa__search_knowledge' } },
+    { type: 'tool/result', data: { message: { toolCallId: 'call-1', content: [{ type: 'text', text: JSON.stringify(retrieval) }] } } },
+    { type: 'tool/call', data: { callId: 'call-2', name: 'orchestrator_read' } },
+    { type: 'tool/result', data: { message: { toolCallId: 'call-2', content: [{ type: 'text', text: '{"read":true}' }] } } },
+  )
+
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'Halfway.' })
+  await h.runtime.idle()
+
+  const usage = { uncachedInputTokens: 150, outputTokens: 100, cacheReadTokens: 5, cacheWriteTokens: 7 }
+  const report = h.runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report!
+  expect(report).toMatchObject({ state: 'progress', usage, retrievalCalls: [{ callId: 'call-1', toolName: 'mcp__bqa__search_knowledge', result: retrieval }] })
+  const details = await read(`ticket/${ticket.id}`) as { assignments: { items: { report?: { usage?: unknown; retrievals?: number } }[] } }
+  expect(details.assignments.items[0]!.report).toMatchObject({ usage, retrievals: 1 })
+})
+
+it('reads usage totals and mcp retrieval calls from a DSH event log, ignoring calls without an object result', () => {
+  const events = [
+    { type: 'assistant/message', data: { usage: { inputTokens: 120, outputTokens: 80, cacheReadTokens: 5, cacheWriteTokens: 7 } } },
+    { type: 'assistant/message', data: { usage: { inputTokens: 30, outputTokens: 20 } } },
+    { type: 'assistant/message', data: { message: { role: 'assistant', content: [] } } },
+    { type: 'tool/call', data: { callId: 'call-1', name: 'mcp__bqa__search_code' } },
+    { type: 'tool/result', data: { message: { toolCallId: 'call-1', content: [{ type: 'text', text: '{"retrieval_id":"r1","corpus_release_id":"rel1"}' }] } } },
+    { type: 'tool/call', data: { callId: 'call-2', name: 'mcp__bqa__read_excerpt' } },
+    { type: 'tool/result', data: { message: { toolCallId: 'call-2', content: [{ type: 'text', text: 'not json' }] } } },
+    { type: 'tool/call', data: { callId: 'call-3', name: 'read' } },
+    { type: 'tool/result', data: { message: { toolCallId: 'call-3', content: [{ type: 'text', text: '{"read":true}' }] } } },
+  ] as never[]
+  expect(usageFromEvents(events)).toEqual({ uncachedInputTokens: 150, outputTokens: 100, cacheReadTokens: 5, cacheWriteTokens: 7 })
+  expect(retrievalCallsFromEvents(events)).toEqual([{ callId: 'call-1', toolName: 'mcp__bqa__search_code',
+    result: { retrieval_id: 'r1', corpus_release_id: 'rel1' } }])
+  expect(usageFromEvents([])).toBeUndefined()
+  expect(retrievalCallsFromEvents([])).toEqual([])
 })
 
 it('tells the main Session of the settings, prompts, requeues and unsubscriptions others made, never of its own', async () => {

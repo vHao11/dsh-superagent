@@ -1,5 +1,5 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
-import type { Assignment, ChannelRef, Decision, DecisionKind, EngineName, Mandate, MandateBasis, Strength, TaskTypeSource, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
+import type { Assignment, ChannelRef, Decision, DecisionKind, EngineName, Mandate, MandateBasis, RetrievalCall, Strength, TaskTypeSource, Thread, Ticket, TicketEndBy, TicketOutcome, TokenUsage, Trigger }
   from './model.ts'
 import type { Reason } from './reasons.ts'
 
@@ -70,8 +70,9 @@ export interface Executor {
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
 }
 
-/** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
-export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
+/** A message for a Channel; `ticketId` names the Ticket it is for, when there is one, `usage` the worker Session token counts it reports, and `retrievalCalls` its read-only retrieval evidence, for a channel that displays them. */
+export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
+  usage?: TokenUsage; retrievalCalls?: RetrievalCall[] }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */

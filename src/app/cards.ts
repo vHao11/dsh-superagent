@@ -49,7 +49,9 @@ export function inputLine(ticket: Ticket, input: TicketInput, worker = false) {
 export function assignmentLine(ticket: Ticket, item: Ticket['assignments'][number]) {
   return { id: item.id, state: item.state, at: item.createdAt, ...(item.endedReason ? { ended_reason: reasonText({ code: item.endedReason }) } : {}),
     ...(item.report ? { report: { state: item.report.state, at: item.report.at, preview: preview(item.report.summary).slice(0, 100),
-      chars: item.report.summary.length, read: `ticket/${ticket.id}/report/${item.id}` } } : {}) }
+      chars: item.report.summary.length, ...(item.report.usage ? { usage: item.report.usage } : {}),
+      ...(item.report.retrievalCalls?.length ? { retrievals: item.report.retrievalCalls.length } : {}),
+      read: `ticket/${ticket.id}/report/${item.id}` } } : {}) }
 }
 export function newestPage<T, L>(items: readonly T[], offset: number, size: number, line: (item: T) => L, next: string) {
   const newest = items.slice().reverse()

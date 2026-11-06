@@ -1,11 +1,11 @@
 /** DSH executor: manages one persistent worker session and workspace directory per ticket. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
-import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, RetrievalCall, Ticket, TicketInput, TokenUsage, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
@@ -24,6 +24,65 @@ const now = (): string => new Date().toISOString()
 export const workerSessionId = (ticketId: string): string => `worker-${ticketId}`
 /** Returns the ticket ID for a worker session ID (`worker-<ticketId>`), or undefined for non-worker sessions. */
 export const ticketOfSession = (sessionId: string): string | undefined => sessionId.startsWith('worker-') ? sessionId.slice('worker-'.length) : undefined
+/** The structural record a decoded session event or result field carries, or undefined for anything else. */
+const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value)
+  ? value as Record<string, unknown> : undefined
+/** A finite non-negative count from a session event, or undefined when absent or not one. */
+const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+/**
+ * Provider-reported token usage summed over the assistant messages of one Session's durable event log, or undefined when the
+ * log holds no usage sample (a Session that has not called a model yet, or one whose provider reported no usage).
+ */
+export function usageFromEvents(events: readonly SessionEvent[]): TokenUsage | undefined {
+  const totals = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  let samples = 0
+  for (const event of events) {
+    if (event.type !== 'assistant/message') continue
+    const usage = record(record(event.data)?.usage)
+    if (!usage) continue
+    samples += 1
+    totals.uncachedInputTokens += count(usage.inputTokens) ?? 0
+    totals.outputTokens += count(usage.outputTokens) ?? 0
+    totals.cacheReadTokens += count(usage.cacheReadTokens) ?? 0
+    totals.cacheWriteTokens += count(usage.cacheWriteTokens) ?? 0
+  }
+  return samples ? totals : undefined
+}
+/**
+ * The read-only MCP retrieval calls, in call order, of one Session's durable event log: each `tool/call` names the call, and its
+ * `tool/result` carries the result object as JSON text. A call without a parseable object result is left out, so a relayed call
+ * always has evidence a channel can validate.
+ */
+export function retrievalCallsFromEvents(events: readonly SessionEvent[]): RetrievalCall[] {
+  const names = new Map<string, string>()
+  const calls: RetrievalCall[] = []
+  for (const event of events) {
+    const data = record(event.data)
+    if (!data) continue
+    if (event.type === 'tool/call') {
+      const { callId, name } = data
+      if (typeof callId === 'string' && callId && typeof name === 'string' && name.startsWith('mcp__')) names.set(callId, name)
+      continue
+    }
+    if (event.type !== 'tool/result') continue
+    const message = record(data.message)
+    const callId = message?.toolCallId
+    const toolName = typeof callId === 'string' ? names.get(callId) : undefined
+    if (typeof callId !== 'string' || !toolName || calls.some(call => call.callId === callId)) continue
+    const content = Array.isArray(message?.content) ? message.content : []
+    const text = content.flatMap(block => {
+      const item = record(block)
+      return item?.type === 'text' && typeof item.text === 'string' ? [item.text] : []
+    }).join('')
+    if (!text) continue
+    let parsed: unknown
+    try { parsed = JSON.parse(text) } catch { continue }
+    const result = record(parsed)
+    if (!result || !Object.keys(result).length) continue
+    calls.push({ callId, toolName, result })
+  }
+  return calls
+}
 /** Maximum runtime for a workspace prepare command. */
 const PREPARE_TIMEOUT_MS = 10 * 60_000
 /** Maximum transient retry attempts for a launch or worker turn, and the initial backoff before resuming a turn. */
@@ -128,7 +187,8 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   // A task type owns its root and mode.
   const directory = type.directoryMode === 'fixed' ? type.directory : join(type.directory, name)
   return { name, directory, assignment, engine, taskType: type.id, taskTypeSource: choice.source,
-    directoryMode: type.directoryMode, model: type.model ?? settings.executor.model, instructions: type.instructions }
+    directoryMode: type.directoryMode, model: type.model ?? settings.executor.model, instructions: type.instructions,
+    ...(type.readOnly ? { readOnly: true as const } : {}) }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -428,6 +488,15 @@ export class DshExecutor implements Executor {
   }
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
+  /** Provider-reported token usage the ticket's worker Session accumulated so far, from its durable event log; undefined when the provider reported none. */
+  usage(ticketId: string): TokenUsage | undefined { return usageFromEvents(this.eventsOf(ticketId)) }
+  /** The read-only MCP retrieval calls, with result objects, that the ticket's worker Session made so far. */
+  retrievalCalls(ticketId: string): RetrievalCall[] { return retrievalCallsFromEvents(this.eventsOf(ticketId)) }
+  /** The durable event log of the ticket's worker Session, or an empty one while it has none. */
+  private eventsOf(ticketId: string): readonly SessionEvent[] {
+    const agent = this.host.context.agents.get(workerSessionId(ticketId) as SessionId)
+    return agent?.session.snapshotEvents() ?? []
+  }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false

@@ -129,6 +129,66 @@
             config:
               fetch: false
               searchTimeoutMs: 60000
+    # The agent preset of a read-only task type's Executor Session (READONLY_WORKER_PRESET in src/app/sessions.ts). Its surface
+    # is the skills plus the BQA read-only MCP retrieval tools only: no shell, no file/read/search tools, no web or todo tools and
+    # no delegation, so nothing on it can write a file or regain that through a subagent. The Session also runs under the
+    # read-only file sandbox permission preset with approvals disabled (src/app/sessions.ts applyPermission). The MCP client's
+    # command and working directory are the BQA application's own; BQA_MCP_COMMAND/BQA_MCP_CWD override them on another machine.
+    - id: dsh-superagent-worker-readonly-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dsh-superagent-worker-readonly
+        name: dsh-superagent 只读执行器
+        description: dsh-superagent 只读任务类型的执行器 Session 专用，不供手动选择；只含技能与 BQA 只读检索 MCP 工具。
+        order: 92
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          # The read-only retrieval tools, published by BQA's own MCP server from its active release (--current, fail closed):
+          # mcp__bqa__search_knowledge, mcp__bqa__search_code and mcp__bqa__read_excerpt.
+          - id: mcp-bqa
+            name: '@deepseek-ai/dsh-mcp-client'
+            config:
+              serverName: bqa
+              transport: stdio
+              command: !!js process.env.BQA_MCP_COMMAND || 'D:/aiworkspace/ai-tools/hermes-business-qa/.venv/Scripts/python.exe'
+              args:
+                - '-B'
+                - '-m'
+                - app.mcp_server
+                - '--current'
+              cwd: !!js process.env.BQA_MCP_CWD || 'D:/aiworkspace/ai-tools/hermes-business-qa'
+              env:
+                PYTHONPATH: !!js process.env.BQA_MCP_CWD || 'D:/aiworkspace/ai-tools/hermes-business-qa'
+                PYTHONUTF8: '1'
+                PYTHONDONTWRITEBYTECODE: '1'
+              toolCallTimeoutMs: 60000
+              failOnStartupError: true
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
     # The agent preset of the main Session (ROUTER_PRESET in src/app/sessions.ts). The worker's 5-second shell and job waits, so a command or a wait does not hold back the next candidates, and
     # only what the main Session uses: no subagents, web, file search or writes, todo list, questions to a person, presenting,
     # plan mode, plugin manager, scheduling, goals or workflows. No persona: the main Session's prompt is complete, so it has

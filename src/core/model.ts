@@ -211,6 +211,10 @@ export interface Decision {
 }
 
 export type AssignmentState = 'pending' | 'running' | 'ended'
+/** Provider-reported token counts of a worker Session, as DSH's token-usage projection measures them: uncached input, output, and cache reads/writes. */
+export interface TokenUsage { uncachedInputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+/** One read-only retrieval tool call a worker made, with the tool's result object, as a Channel may relay it as evidence (BQA). */
+export interface RetrievalCall { callId: string; toolName: string; result: Record<string, unknown> }
 /**
  * What an Assignment reports: work is in progress (`progress`), its worker waits for a Trigger (`waiting`), a result is
  * ready (`ready`), a person must act to unblock or recover it (`blocked` or `failed`), or nothing is left to do (`dropped`).
@@ -224,7 +228,7 @@ export interface Assignment {
   startedAt?: string
   endedAt?: string
   endedReason?: string
-  report?: { state: ReportState; summary: string; at: string }
+  report?: { state: ReportState; summary: string; at: string; usage?: TokenUsage; retrievalCalls?: RetrievalCall[] }
   /** When Inputs last reached the worker; one at or after `report.at` means the worker has been busy with Inputs since that report. */
   deliveredAt?: string
   /**
@@ -332,6 +336,8 @@ export interface Execution {
   model?: ExecutionModel | null
   /** Instructions snapshotted from the task type, appended to the worker system prompt. */
   instructions?: string
+  /** The task type runs its worker with a read-only tool surface and file sandbox; snapshotted when the Ticket is accepted. */
+  readOnly?: true
 }
 /** The model a Ticket's worker was accepted with, snapshotted so a later settings change does not move it. */
 export interface ExecutionModel { provider: string; model: string; reasoningEffort?: string }

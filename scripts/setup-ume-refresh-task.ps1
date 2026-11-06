@@ -24,7 +24,14 @@
 
 .NOTES
   The task runs as the current user. Registering it may require an elevated shell depending on local policy. The wrapper in
-  the temp directory hides the PowerShell window with `wscript.exe //B`, which the UME ingest case verified.
+  the per-user directory hides the PowerShell window with `wscript.exe //B`, which the UME ingest case verified.
+
+  The capture tool injects an exporter DLL into the running UME client, and its own docs treat that as an on-demand one-shot
+  export rather than a resident mechanism. A repeated 10-minute refresh can therefore hit its known DETACH stall: the export
+  data lands in the temp export database, but the completion marker never appears and one client database connection can stay
+  wedged, so later runs can no longer copy `messages` until the client process restarts. `scripts/export.ps1` therefore also
+  accepts an export database that is already complete when the marker is missing, and reports it. After a stall the task keeps
+  failing at the same point: restart the UME client once (closing and reopening it), then the next run exports normally again.
 #>
 param(
   [ValidateSet('install', 'uninstall')][string]$Action = 'install',
@@ -47,13 +54,19 @@ if (-not (Test-Path -LiteralPath $RefreshScript -PathType Leaf)) {
 }
 $refresh = (Resolve-Path -LiteralPath $RefreshScript).Path
 # A hidden launcher: wscript starts PowerShell with no window and returns at once, so a long export never shows a console.
-$wrapper = Join-Path ([System.IO.Path]::GetTempPath()) 'dsh-ume-refresh.vbs'
+# It lives in a per-user stable directory rather than the temp directory a cleanup may empty, which would leave the task silently failing.
+$wrapperDirectory = Join-Path $env:LOCALAPPDATA 'dsh-superagent'
+New-Item -ItemType Directory -Force -Path $wrapperDirectory | Out-Null
+$wrapper = Join-Path $wrapperDirectory 'dsh-ume-refresh.vbs'
 $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$refresh`" -NoPause"
-$vbs = "CreateObject(""WScript.Shell"").Run ""$($command.Replace('"', '""'))"", 0, False"
+# WScript takes one string literal: every quote inside the command becomes a doubled quote, so the wrapper's own delimiters stay intact.
+$vbs = 'CreateObject("WScript.Shell").Run "' + $command.Replace('"', '""') + '", 0, False'
 [System.IO.File]::WriteAllText($wrapper, $vbs, (New-Object System.Text.UTF8Encoding($false)))
 
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument "//B //Nologo `"$wrapper`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
+# `$Action` is this script's parameter and validates its own set, so the task action needs another name.
+$taskAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument "//B //Nologo `"$wrapper`""
+# Windows rejects a TimeSpan.MaxValue repetition duration (P99999999D), so the task repeats for ten years instead.
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::FromDays(3650))
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Refreshes the UME message-capture export for the dsh-superagent ume Source' -Force | Out-Null
-Write-Output "Registered scheduled task $TaskName every $IntervalMinutes minute(s): $refresh"
+Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger -Settings $settings -Description 'Refreshes the UME message-capture export for the dsh-superagent ume Source' -Force | Out-Null
+Write-Output "Registered scheduled task $TaskName every $IntervalMinutes minute(s): $refresh (wrapper $wrapper)"
