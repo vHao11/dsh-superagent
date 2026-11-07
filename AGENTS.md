@@ -56,3 +56,19 @@
 排障过程与证据见
 `D:\aiworkspace\workenvfix\cases\2026-11-05-restart-3080-requires-highest-privilege-scheduled-task.md`；
 同节参考 `D:\aiworkspace\workenvfix\AGENTS.md` 的「本机关键操作约定：重启 DSH Web（3080）」。
+
+## 版本管理与 upstream 同步
+
+本仓库的部署基线、数据库备份/回滚与完整命令以 [DEPLOY.md](DEPLOY.md) 为准；要点：
+
+- `main` 只镜像 upstream `deepseek-ai/dsh-superagent-prototype`，不直接提交；`windows-adapt` 是日常
+  集成分支；`deploy/<日期>` 是按 PR 依赖顺序合并功能分支的部署快照，构建与定向测试通过后打
+  `deploy-<日期>` tag，部署运行的就是该 tag 构建出的 `lib/`。
+- 当前基线：`deploy/2026-11-07` / `deploy-2026-11-07`，代码基线 `2e60e9c`，数据库 schema 13。
+- upstream 同步：`git fetch upstream --prune --tags` → `git switch windows-adapt` →
+  `git merge --no-ff upstream/main` 解冲突 → 把 `windows-adapt` 按依赖链同步到各功能分支 →
+  重建 `deploy/<新日期>` 并合并（sources-batching → i-lane #2 → s-lane-phase2 #3 →
+  engine-tasktype #4 → engine-model-picker #5 → restart-rule #6）→ `pnpm install`（lockfile 变化时）/
+  `pnpm typecheck` / 定向 vitest / `pnpm build` → 备份数据库（schema 与旧构建不兼容，备份不可省）→
+  由 orchestrator 统一重启 3080 → 验证 `/orchestrator/api/state` 与 smoke → 推 origin（不要推 upstream）。
+- `lib/` 是构建产物，不提交、不手改；改 `src/` 后必须重新 `pnpm build`。

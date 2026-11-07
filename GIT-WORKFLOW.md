@@ -13,7 +13,10 @@
 |---|---|
 | `windows-adapt` | 本仓库的默认分支：Windows 适配 + schedule 来源 + Claude Code 桥接 + 面板/任务类型改动；日常修改在此提交 |
 | `main` | 上游原型快照（`deepseek-ai/dsh-superagent-prototype` 的 `8c32a9d`），保持原样，不直接提交 |
+| `deploy/<日期>` | 部署快照分支：从 `windows-adapt` 拉出，按 PR 依赖顺序合并功能分支，验证后打 `deploy-<日期>` tag；当前为 `deploy/2026-11-07`（tag `deploy-2026-11-07`） |
 | `baseline-20261104` | 建立 Git 基线时的标签（行尾规范化后） |
+
+部署基线、数据库备份/回滚与 upstream 同步流程见 [DEPLOY.md](DEPLOY.md)。
 
 功能开发建议从 `windows-adapt` 拉短分支：
 
