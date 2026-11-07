@@ -23,6 +23,24 @@ type Task = Record<string, unknown>
 const asText = (value: unknown): string | undefined => typeof value === 'string' && value ? value : typeof value === 'number' ? String(value) : undefined
 const asNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
 const asList = (value: unknown): string[] => Array.isArray(value) ? value.flatMap(item => asText(item) ?? []) : asText(value) ? [asText(value)!] : []
+/** The capture tool's `context` list joined oldest-to-newest, with each message's sender when the export names one. */
+const asContext = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value || undefined
+  if (!Array.isArray(value)) return undefined
+  const lines = value.flatMap(item => {
+    if (typeof item === 'string') return item ? [item] : []
+    if (!item || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    const text = asText(row.text)
+    if (!text) return []
+    const sender = row.sender
+    const who = typeof sender === 'string' ? sender
+      : sender && typeof sender === 'object'
+        ? asText((sender as Record<string, unknown>).name) ?? asText((sender as Record<string, unknown>).id) : undefined
+    return [who ? `${who}: ${text}` : text]
+  })
+  return lines.length ? lines.join('\n') : undefined
+}
 const iso = (value: string): string => { const at = Date.parse(value); return Number.isFinite(at) ? new Date(at).toISOString() : value }
 
 /**
@@ -34,7 +52,7 @@ export function umeTrigger(task: Task, file: string): Trigger | undefined {
   const last = asText(task.last_time)
   if (!sid || !last) return undefined
   const name = asText(task.name)
-  const context = asText(task.context) ?? name ?? sid
+  const context = asContext(task.context) ?? name ?? sid
   const reasons = asList(task.reasons)
   return { id: key('ume', sid, last), source: SOURCE, threads: [{ source: SOURCE, id: sid }],
     actor: { source: SOURCE, id: asText(task.chatter_id) ?? '' }, human: true, at: iso(last), text: context,

@@ -44,6 +44,13 @@ function bqaConfig(host: BqaHttpHost): BqaConfig {
 function producedTicket(host: BqaHttpHost, decision: Decision | undefined): string | undefined {
   return decision?.ticketId ?? (decision?.id ? host.store.decisions.get(decision.id)?.ticketId : undefined)
 }
+/**
+ * The scope of a BQA ticket: the question plus the requestId the worker must pass unchanged to the retrieval gateway
+ * (`POST /api/internal/retrieval/<tool>`), because the gateway binds every search to the requesting run by that id.
+ */
+export function bqaScope(input: BqaQuestion): string {
+  return `${input.question.slice(0, 1500)}\n\nBQA 检索参数：requestId=${input.requestId}。使用 bqa-search.cmd 检索时把该 requestId 原样传入；本行不要写入答案正文。`
+}
 
 /**
  * Registers `/bqa/api/*`: the BQA service pushes questions here and stops tickets here, on loopback with the shared secret.
@@ -63,7 +70,7 @@ export function registerBqaHttp(ctx: Context, host: BqaHttpHost): () => void {
       let decision: Decision | undefined
       let duplicate = false
       if (config.autoAccept === 'explicit') {
-        const accepted = host.engine.acceptSourceTrigger(trigger, { title: bqaTitle(input.question), scope: input.question.slice(0, 1500),
+        const accepted = host.engine.acceptSourceTrigger(trigger, { title: bqaTitle(input.question), scope: bqaScope(input),
           taskType: config.taskType })
         decision = accepted.decision
         duplicate = accepted.result === 'duplicate'

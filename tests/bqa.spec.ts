@@ -63,6 +63,8 @@ describe('inbound routes', () => {
     const first = await call('POST', '/bqa/api/questions', question, { 'x-bqa-secret': SECRET })
     expect(first).toMatchObject({ status: 200, body: { triggerId: expect.any(String), ticketId: 'ticket-1', duplicate: false } })
     expect(engine.acceptSourceTrigger).toHaveBeenCalledTimes(1)
+    // The worker needs the requestId unchanged to call the retrieval gateway; it rides in the ticket scope.
+    expect(engine.acceptSourceTrigger.mock.calls[0]![1]).toMatchObject({ scope: expect.stringContaining('requestId=req-1') })
     expect(store.get(KV.bqa.request('req-1'))).toMatchObject({ triggerId: expect.any(String), ticketId: 'ticket-1' })
     const again = await call('POST', '/bqa/api/questions', question, { 'x-bqa-secret': SECRET })
     expect(again.body).toMatchObject({ ticketId: 'ticket-1', duplicate: true })
