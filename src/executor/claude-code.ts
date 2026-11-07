@@ -18,7 +18,7 @@ import { ToolCallId, createAssistantMessage, createToolResultMessage, type Conte
 import type { EpochHeader, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { EngineName, Ticket } from '../core/index.ts'
 import { KV } from '../kv.ts'
-import type { Settings } from '../policy.ts'
+import type { RoleModel, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import {
   ASK_TOOL, ASK_TOOL_SCHEMA, BRIDGE_PROMPT, CardResources, INTERRUPT_WAIT_MS, abortError, asString, delay, isRecord,
@@ -35,6 +35,10 @@ export interface ClaudeCodeOptions {
   readonly ticket: Ticket
   readonly store: Pick<Store, 'get' | 'set'>
   readonly settings: () => Settings['executor']
+  /** The model and reasoning effort this worker runs with, from the Ticket's snapshot; null keeps the CLI's own selection. */
+  readonly model?: () => RoleModel | null
+  /** The ticket's worker instructions (the same text a DSH worker's system prompt carries), appended to the bridge prompt. */
+  readonly instructions?: () => string
   readonly logger: Context['logger']
   readonly lifetime: AbortSignal
   /** The execution variables of the ticket, passed to the native process as `DSH_SUPERAGENT_*` environment. */
@@ -240,6 +244,8 @@ export class ClaudeCodeDriver {
   private resumeFailed = false
   private claudeSessionId?: string
   private model?: string
+  private readonly configuredModel: () => RoleModel | null
+  private readonly workerInstructions?: () => string
   private lastTurn = 1
   private lastStep = 1
   private reportSeq = 0
@@ -262,6 +268,8 @@ export class ClaudeCodeDriver {
     this.ticket = options.ticket
     this.store = options.store
     this.settings = options.settings
+    this.configuredModel = options.model ?? (() => null)
+    this.workerInstructions = options.instructions
     this.logger = options.logger
     this.environment = options.environment
     this.resources = new CardResources(options.agent, options.logger, 'Claude Code', 'claude-read')
@@ -346,12 +354,17 @@ export class ClaudeCodeDriver {
     const bin = resolveClaudeBin(settings.claudeBin)
     const args = ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--permission-prompt-tool=stdio', '--permission-prompts', 'host', '--permission-mode', settings.claudePermissionMode]
-    if (settings.claudeModel) args.push('--model', settings.claudeModel)
-    if (settings.claudeEffort) args.push('--effort', settings.claudeEffort)
+    // The shared execution model carries the model id and reasoning effort this engine runs with, so a task type configures
+    // them once in the same picker every engine uses.
+    const model = this.configuredModel()
+    if (model?.model) args.push('--model', model.model)
+    if (model?.reasoningEffort) args.push('--effort', model.reasoningEffort)
     // Ultracode is a setting rather than an effort level, so it rides in the additional settings JSON.
     if (settings.claudeUltracode) args.push('--settings', JSON.stringify({ ultracode: true }))
     if (this.claudeSessionId) { args.push('--resume', this.claudeSessionId); this.resumeRequested = true }
-    args.push('--append-system-prompt', BRIDGE_PROMPT)
+    // The worker instructions are what a DSH worker reads in its system prompt: the same policy, mandate and task-type text.
+    const instructions = this.workerInstructions?.() ?? ''
+    args.push('--append-system-prompt', instructions ? `${BRIDGE_PROMPT}\n\n${instructions}` : BRIDGE_PROMPT)
     const cwd = this.ticket.execution?.directory ?? process.cwd()
     const env: NodeJS.ProcessEnv = { ...process.env }
     try {
@@ -393,7 +406,7 @@ export class ClaudeCodeDriver {
   private logHeader(): void {
     if (this.headerLogged) return
     this.headerLogged = true
-    const header: EpochHeader = { config: { provider: 'claude-code', model: this.settings().claudeModel || 'claude' }, tools: [ASK_TOOL_SCHEMA] }
+    const header: EpochHeader = { config: { provider: 'claude-code', model: this.configuredModel()?.model || 'claude' }, tools: [ASK_TOOL_SCHEMA] }
     const existing = this.session.requestHeader()
     this.session.append('request/header', { header, reason: existing ? 'change' : 'initial', ...(existing ? { startsSeries: true } : {}) })
   }

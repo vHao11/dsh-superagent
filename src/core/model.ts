@@ -330,8 +330,6 @@ export type EngineName = (typeof ENGINE_NAMES)[number]
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions'
 /** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
 export type ClaudeApproval = 'ask' | 'approve' | 'deny'
-/** Reasoning effort passed as Claude Code's `--effort`; empty keeps the CLI's own level for the model. */
-export type ClaudeEffort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 /** How the bridge answers an opencode permission request: ask a person, allow, refuse, or the smart default (allow read-only calls, ask for the rest). */
 export type OpencodeApproval = 'ask' | 'approve' | 'deny' | 'smart'
 /** The permission preset an opencode worker starts from; Phase 1 applies it to opencode's own global configuration. */
@@ -340,10 +338,10 @@ export type OpencodePermissionPreset = 'smart' | 'safe' | 'read-only' | 'full' |
 export interface PermissionRule { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 /** How a Ticket's task type was chosen: explicitly by the operator or sorter, its Source's configured default, the assessor's classification, or no task types configured (legacy). */
 export type TaskTypeSource = 'explicit' | 'source' | 'model' | 'legacy'
-/** The resolved Claude Code profile of a Ticket, snapshotted when it is accepted so a later settings edit does not move it. */
-export interface ExecutionClaude { model: string; permissionMode: ClaudePermissionMode; approval: ClaudeApproval; effort: ClaudeEffort; ultracode: boolean }
+/** The resolved Claude Code profile of a Ticket, snapshotted when it is accepted so a later settings edit does not move it; the model and effort are the shared execution model's. */
+export interface ExecutionClaude { permissionMode: ClaudePermissionMode; approval: ClaudeApproval; ultracode: boolean }
 /** The resolved opencode profile of a Ticket, snapshotted when it is accepted; empty strings inherit opencode's own configuration. */
-export interface ExecutionOpencode { model: string; agent: string; approval: OpencodeApproval; permissionPreset: OpencodePermissionPreset
+export interface ExecutionOpencode { agent: string; approval: OpencodeApproval; permissionPreset: OpencodePermissionPreset
   permissionRules: PermissionRule[] }
 /** Engine-specific options a Ticket was accepted with; only the engines that have them record a key. */
 export interface ExecutionEngineOptions { opencode?: ExecutionOpencode }

@@ -1,14 +1,15 @@
 /** Block-scoped settings validation, optimistic concurrency saves, processing pause control, and source policy synchronization. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { UserError, type EngineForSettings } from '../core/index.ts'
+import { UserError, type EngineForSettings, type EngineName } from '../core/index.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, policyEffects, policyVersion } from '../policy.ts'
-import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
+import type { RoleModel, Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { resolveRoleModel } from './role-models.ts'
-import { deploymentBlockedCommands } from './executor-profile.ts'
+import { deploymentBlockedCommands, inheritedModel } from './executor-profile.ts'
+import { engineCatalog } from './engine-models.ts'
 import { changedPaths, settingsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
 import { setupChanged, type Setup } from './setup.ts'
@@ -23,9 +24,9 @@ export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, worker engines, the native Claude Code/opencode executables and parameters, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.directoryMode, executor.prepare,
-  executor.blockedCommands, executor.engine, executor.claudeBin, executor.claudeModel, executor.claudePermissionMode,
-  executor.claudeApproval, executor.claudeEffort, executor.claudeUltracode, executor.opencodeBin,
-  executor.opencodeModel, executor.opencodeAgent, executor.opencodeApproval, executor.opencodePermissionPreset,
+  executor.blockedCommands, executor.engine, executor.claudeBin, executor.claudePermissionMode,
+  executor.claudeApproval, executor.claudeUltracode, executor.opencodeBin,
+  executor.opencodeAgent, executor.opencodeApproval, executor.opencodePermissionPreset,
   executor.opencodePermissionRules,
   // Every task type carries its own execution profile, which a non-panel origin must not change either.
   executor.taskTypes.map(type => [type.id, type.directory, type.directoryMode, type.engine, type.prepare, type.blockedCommands,
@@ -165,15 +166,29 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
-    const models = block === 'eval' ? [{ model: candidate.eval.model, previous: current.eval.model }]
-      : block === 'executor' ? [{ model: candidate.executor.model, previous: current.executor.model },
+    const models = block === 'eval' ? [{ model: candidate.eval.model, previous: current.eval.model, engine: 'dsh' as EngineName }]
+      : block === 'executor' ? [{ model: candidate.executor.model, previous: current.executor.model, engine: candidate.executor.engine },
         ...candidate.executor.taskTypes.map(type => ({ model: type.model,
-          previous: current.executor.taskTypes.find(item => item.id === type.id)?.model ?? null }))]
+          previous: current.executor.taskTypes.find(item => item.id === type.id)?.model ?? null,
+          engine: type.engine ?? candidate.executor.engine }))]
       : []
-    for (const { model, previous } of models) {
+    for (const { model, previous, engine } of models) {
       if (!model || JSON.stringify(model) === JSON.stringify(previous)) continue
-      try { await resolveRoleModel(this.host.context, model) }
-      catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
+      await this.checkModel(model, engine, block)
+    }
+    // opencode falls back to its own configured default when no model is chosen, and that model may be one this machine
+    // cannot authenticate ("provider authentication required"). Refuse that configuration at save time, where the panel can
+    // show which picker to use, instead of failing the worker's first turn.
+    if (block === 'executor') {
+      const executor = candidate.executor
+      for (const type of executor.taskTypes) {
+        if ((type.engine ?? executor.engine) === 'opencode' && !inheritedModel(candidate, type)) {
+          throw new UserError('engineModelRequired', { block, engine: 'opencode' })
+        }
+      }
+      if (!executor.taskTypes.length && executor.engine === 'opencode' && !executor.model) {
+        throw new UserError('engineModelRequired', { block, engine: 'opencode' })
+      }
     }
     rules.guard?.(current, candidate, origin)
     if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
@@ -205,6 +220,25 @@ export class Settings {
     if (restarting) this.host.setup.restart()
     else this.host.requestPass()
     return { saved: true, revision: store.blockRevision(block), policy_changed: before !== after, restarting, context_delivery: delivery }
+  }
+  /**
+   * Check one model route against its engine's catalog before it is saved: DSH resolves it through the live LLM registry,
+   * opencode must list the exact provider/model this machine reports, and Claude Code accepts its aliases or a full id.
+   * @throws UserError (`modelUnavailable`) naming the engine's own reason when the route cannot run there.
+   */
+  private async checkModel(model: RoleModel, engine: EngineName, block: string): Promise<void> {
+    if (engine === 'claude-code') return
+    if (engine === 'dsh') {
+      try { await resolveRoleModel(this.host.context, model) }
+      catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
+      return
+    }
+    const catalog = await engineCatalog({ context: this.host.context,
+      opencodeBin: () => this.host.store.settings().executor.opencodeBin }, engine)
+    if (catalog.error) throw new UserError('modelUnavailable', { block, error: catalog.error })
+    const listed = catalog.groups.some(group => group.id === model.provider && group.models.some(item => item.id === model.model))
+    if (!listed) throw new UserError('modelUnavailable', { block,
+      error: `opencode does not list ${model.provider}/${model.model}; choose a model this machine can use (opencode models)` })
   }
   /**
    * Pauses or resumes processing (new evaluations, worker dispatch, and channel delivery, while Sources continue recording

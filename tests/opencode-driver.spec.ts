@@ -14,7 +14,8 @@ const quiet = () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn() })
 
 /** A host around one driver: its scripted ACP servers, Session log, question service and spawn seam. */
 function harness(options: { answers?: unknown[]; stored?: { sessionId?: string; cwd?: string } | false; executor?: Record<string, unknown>
-  script?: AcpScript; directory?: string; real?: string } = {}) {
+  script?: AcpScript; directory?: string; real?: string; model?: { provider: string; model: string; reasoningEffort?: string } | null;
+  instructions?: () => string } = {}) {
   const directory = options.real ?? options.directory ?? 'C:/work/t1'
   const events: Appended[] = []
   const session = {
@@ -61,6 +62,8 @@ function harness(options: { answers?: unknown[]; stored?: { sessionId?: string; 
     agent, ticket: { id: 't1', execution: { directory } } as Ticket,
     store: { get: (key: string) => store.get(key), set: (key: string, value: unknown) => { store.set(key, value) } },
     settings: () => settings, logger, lifetime: lifetime.signal, ...(options.real ? {} : { spawn }),
+    ...(options.model !== undefined ? { model: () => options.model ?? null } : {}),
+    ...(options.instructions ? { instructions: options.instructions } : {}),
     environment: () => [{ key: 'DSH_SUPERAGENT_NAME', value: 'native-worker' }, { key: 'PATH', value: '/not-this' }],
   } as unknown as OpencodeOptions)
   const detach = driver.attach()
@@ -86,7 +89,7 @@ describe('native opencode driver turns', () => {
         server.promptResponse('end_turn', { inputTokens: 1, outputTokens: 2, totalTokens: 3 })
       },
     }
-    const test = harness({ stored: false, script })
+    const test = harness({ stored: false, script, instructions: () => 'WORKER INSTRUCTIONS: follow the ticket policy.' })
     const running = test.agent.step(decision(new AbortController().signal))
     await expect(running).resolves.toEqual({ kind: 'completed' })
 
@@ -106,6 +109,7 @@ describe('native opencode driver turns', () => {
 
     const prompts = test.server.prompts[0]!.prompt as { type: string; text: string }[]
     expect(prompts[0]!.text.startsWith(BRIDGE_PROMPT)).toBe(true)
+    expect(prompts[0]!.text).toContain('WORKER INSTRUCTIONS: follow the ticket policy.')
     expect(prompts[0]!.text).toContain('Do the work')
     expect(test.events.filter(event => event.type === 'user/message')).toHaveLength(1)
     expect(assistantTexts(test.events)).toEqual([[{ type: 'reasoning', text: 'plan' }, { type: 'text', text: 'Hello' }]])
@@ -279,15 +283,15 @@ describe('native opencode driver turns', () => {
 
 describe('native opencode driver session and cancellation', () => {
   it('applies the ticket\'s model and agent before the prompt, model first', async () => {
-    const test = harness({ stored: false, executor: { opencodeModel: 'ds/deepseek-flash', opencodeAgent: 'plan' },
-      script: { prompt: (server) => server.promptResponse('end_turn') } })
+    const test = harness({ stored: false, model: { provider: 'ds', model: 'deepseek-flash', reasoningEffort: 'high' },
+      executor: { opencodeAgent: 'plan' }, script: { prompt: (server) => server.promptResponse('end_turn') } })
     await expect(test.agent.step(decision(new AbortController().signal))).resolves.toEqual({ kind: 'completed' })
     const order = test.server.process.lines.filter(line => typeof line.method === 'string').map(line => line.method)
     const newAt = order.indexOf('session/new'), modelAt = order.indexOf('session/set_config_option'), modeAt = order.indexOf('session/set_mode')
     expect(newAt).toBeGreaterThanOrEqual(0)
     expect(modelAt).toBeGreaterThan(newAt)
     expect(modeAt).toBeGreaterThan(modelAt)
-    expect(test.server.process.written('session/set_config_option')[0]!.params).toMatchObject({ configId: 'model', value: 'ds/deepseek-flash' })
+    expect(test.server.process.written('session/set_config_option')[0]!.params).toMatchObject({ configId: 'model', value: 'ds/deepseek-flash#high' })
     expect(test.server.process.written('session/set_mode')[0]!.params).toMatchObject({ modeId: 'plan' })
     test.detach()
   })
@@ -445,7 +449,7 @@ const smoke = process.env.OPENCODE_SMOKE === '1' ? it : it.skip
 describe('native opencode driver against the real ACP process', () => {
   smoke('runs one real turn and records its terminal report', async () => {
     const test = harness({ stored: false, real: process.env.OPENCODE_SMOKE_DIR ?? process.cwd(),
-      executor: { opencodeModel: 'ds/deepseek-flash' } })
+      model: { provider: 'ds', model: 'deepseek-flash' } })
     const prompt = 'Do not use any tools. Reply with exactly "OK" on the first line, then on the second line: '
       + 'DSH_REPORT {"state":"ready","summary":"Smoke test"}'
     await expect(test.agent.step(decision(new AbortController().signal, [createUserMessage({ source: { kind: 'user' },

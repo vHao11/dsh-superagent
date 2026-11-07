@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { EngineCatalog } from './engine-models.ts'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
 import { classifyTaskType, policyVersion, unclassifiedTaskTypeError } from '../policy.ts'
@@ -13,6 +14,7 @@ import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { WorktreeNameSchema } from './assessment.ts'
 import { ENGINE_NAMES, UserError, type Engine, type EngineForPeople, type Ticket } from '../core/index.ts'
+import type { EngineName } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
@@ -54,6 +56,8 @@ export interface HttpHost {
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
+  /** The models one worker engine can run, for the panel's engine-aware model picker. */
+  engineModels(engine: EngineName): Promise<EngineCatalog>
 }
 /**
  * Represents a client-facing 400, 403, 404, 409 or 500 error raised during management or source route parsing or lookup.
@@ -141,6 +145,8 @@ const limit = (fallback: number, max: number) => z.coerce.number().int().positiv
 const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), taskType: z.string().trim().max(64).optional(),
   offset, limit: limit(20, 1000) })
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
+/** The engine whose catalog the picker asks for; an unknown engine is a bad request, not a silent fallback. */
+const EngineQuery = z.object({ engine: z.enum(ENGINE_NAMES) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
@@ -233,6 +239,7 @@ function routes(runtime: HttpHost): Routes {
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
     'GET models': () => runtime.models(),
+    'GET engine-models': ({ query }) => runtime.engineModels(EngineQuery.parse(query).engine),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
       const request = z.object({ config: z.unknown(), baseRevision: z.number().int().nonnegative() }).parse(await promptBody(input))

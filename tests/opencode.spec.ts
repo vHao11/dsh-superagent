@@ -174,20 +174,20 @@ describe('opencode session and executable resolution', () => {
     expect(sameCwd('C:/work/t1', 'C:/work/t2')).toBe(false)
   })
   it('reads the opencode profile a Ticket snapshotted, or its type\'s when the Ticket predates the snapshot', () => {
-    const settings = SettingsSchema.parse({ executor: { opencodeModel: 'global/model', opencodeAgent: 'build', opencodeApproval: 'ask',
+    const settings = SettingsSchema.parse({ executor: { opencodeAgent: 'build', opencodeApproval: 'ask',
       opencodePermissionPreset: 'safe', taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.', directory: 'C:\\w\\native',
-        engine: 'opencode', opencode: { model: 'type/model', approval: 'deny' } }] } })
+        engine: 'opencode', opencode: { agent: 'type-agent', approval: 'deny' } }] } })
     const ticket = (execution: Record<string, unknown>): Ticket => ({ execution: { name: 'native-1', directory: 'C:\\w\\native',
       assignment: '', ...execution } }) as Ticket
     expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({
-      opencodeModel: 'type/model', opencodeAgent: 'build', opencodeApproval: 'deny', opencodePermissionPreset: 'safe' })
-    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native', engineOptions: { opencode: { model: 'snap/model',
+      opencodeAgent: 'type-agent', opencodeApproval: 'deny', opencodePermissionPreset: 'safe' })
+    expect(opencodeSettingsForTicket(settings, ticket({ taskType: 'native', engineOptions: { opencode: {
       agent: 'plan', approval: 'approve', permissionPreset: 'full', permissionRules: [] } } }))).toMatchObject({
-      opencodeModel: 'snap/model', opencodeAgent: 'plan', opencodeApproval: 'approve', opencodePermissionPreset: 'full' })
+      opencodeAgent: 'plan', opencodeApproval: 'approve', opencodePermissionPreset: 'full' })
   })
   it('keeps the schema defaults the panel will expose later', () => {
     const settings = ExecutorConfigSchema.parse({})
-    expect(settings).toMatchObject({ opencodeBin: '', opencodeModel: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart' })
+    expect(settings).toMatchObject({ opencodeBin: '', opencodeAgent: '', opencodeApproval: 'smart', opencodePermissionPreset: 'smart' })
     expect(TaskTypeSchema.parse({ id: 'native', name: 'Native', description: 'Native work.', directory: 'C:\\w\\native' }).opencode).toBeNull()
   })
 })

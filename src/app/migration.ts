@@ -17,7 +17,7 @@ import type { SettingsVersion, Store } from './store.ts'
 import { Versions } from './versions.ts'
 import { KV, type Key } from '../kv.ts'
 
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 /** The oldest database schema version this build can open and migrate directly. */
 export const OLDEST_SCHEMA = 10
 /** Returns an error message explaining why `version` cannot be opened: older schemas need a new state directory. */
@@ -113,6 +113,76 @@ function withoutDefaultTaskType(value: Stored): Stored {
   if (!isObject(executor)) return value
   const { defaultTaskType: _defaultTaskType, ...kept } = executor
   return { ...rest, executor: kept }
+}
+/**
+ * Rewrite all schema 12 records into their schema 13 shapes in place: the engine-specific model parameters are gone in
+ * favor of one shared execution model per task type, so a configured opencode or Claude Code model moves into that model and
+ * the removed fields are stripped from the current settings and every historical revision.
+ */
+export function migrateTo13(store: Store): void {
+  step('the settings', () => {
+    for (const name of ['settings', ...store.keys('settings-version:')]) {
+      const value = store.get<unknown>(name)
+      if (name === 'settings') {
+        if (isObject(value)) store.set(name, withoutEngineModelParameters(value))
+        continue
+      }
+      const version = value as { source: string; settings: unknown }
+      if (!isObject(version) || !isObject(version.settings)) continue
+      store.set(name, { ...version, settings: withoutEngineModelParameters(version.settings) })
+    }
+  })
+}
+/** Parse an engine's `provider/model` (optionally `#effort`) setting into the shared model shape; null when it is malformed. */
+export function parseModelRoute(value: string): Stored | null {
+  const trimmed = value.trim()
+  const [route = '', ...variant] = trimmed.split('#')
+  const at = route.indexOf('/')
+  if (at <= 0 || at === route.length - 1) return null
+  const effort = variant.join('#').trim()
+  return { provider: route.slice(0, at), model: route.slice(at + 1), ...(effort ? { reasoningEffort: effort } : {}) }
+}
+/** Move one task type's removed Claude Code and opencode model fields into its shared execution model. */
+function modelWithoutTypeParameters(type: Stored): Stored {
+  const { claude, opencode, ...rest } = type
+  const legacyClaude = isObject(claude) ? claude : {}
+  const legacyOpencode = isObject(opencode) ? opencode : {}
+  const claudeModel = text(legacyClaude.model)
+  const effort = text(legacyClaude.effort)
+  const opencodeModel = text(legacyOpencode.model)
+  const claudeRoute = claudeModel ? { provider: 'anthropic', model: claudeModel,
+    ...(effort ? { reasoningEffort: effort } : {}) } : null
+  const opencodeRoute = opencodeModel ? parseModelRoute(opencodeModel) : null
+  // The removed parameter belonged to the type's engine, so on that engine it is the route that actually ran the
+  // worker and wins over the old generic model; another engine keeps the generic route it already had.
+  const engine = typeof type.engine === 'string' ? type.engine : ''
+  const model = engine === 'claude-code' ? claudeRoute ?? rest.model ?? null
+    : engine === 'opencode' ? opencodeRoute ?? rest.model ?? null
+      : rest.model ?? claudeRoute ?? opencodeRoute ?? null
+  const nextClaude = isObject(claude) ? (() => {
+    const { model: _model, effort: _effort, ...kept } = claude
+    return Object.keys(kept).length ? kept : null
+  })() : claude
+  const nextOpencode = isObject(opencode) ? (() => {
+    const { model: _model, ...kept } = opencode
+    return Object.keys(kept).length ? kept : null
+  })() : opencode
+  return { ...rest, ...(model ? { model } : {}), ...(nextClaude !== undefined ? { claude: nextClaude } : {}),
+    ...(nextOpencode !== undefined ? { opencode: nextOpencode } : {}) }
+}
+/** Move the executor's removed engine model fallbacks into its shared model, then strip the removed fields everywhere. */
+function withoutEngineModelParameters(value: Stored): Stored {
+  const { executor, ...rest } = value as { executor?: Stored }
+  if (!isObject(executor)) return value
+  const { claudeModel, claudeEffort, opencodeModel, ...kept } = executor
+  const engine = typeof kept.engine === 'string' ? kept.engine : 'dsh'
+  const claudeModelText = text(claudeModel), effort = text(claudeEffort), opencodeModelText = text(opencodeModel)
+  const legacy = engine === 'claude-code' ? claudeModelText ? { provider: 'anthropic', model: claudeModelText,
+    ...(effort ? { reasoningEffort: effort } : {}) } : null
+    : engine === 'opencode' ? opencodeModelText ? parseModelRoute(opencodeModelText) : null : null
+  const model = kept.model ?? legacy
+  const taskTypes = Array.isArray(kept.taskTypes) ? kept.taskTypes.map(type => isObject(type) ? modelWithoutTypeParameters(type) : type) : undefined
+  return { ...rest, executor: { ...kept, ...(model ? { model } : {}), ...(taskTypes ? { taskTypes } : {}) } }
 }
 /**
  * Normalize trigger and thread timestamps to fixed-width millisecond ISO strings so lexicographical text order matches
@@ -229,7 +299,7 @@ interface Member { name?: string; feishuId?: string; github?: string }
  */
 export function migrateSettings(value: unknown): unknown {
   if (!isObject(value)) return value
-  if (!('members' in value || 'allowedChats' in value || 'admission' in value)) return withoutRemovedFields(value)
+  if (!('members' in value || 'allowedChats' in value || 'admission' in value)) return withoutEngineModelParameters(withoutRemovedFields(value))
   const old = value as { models?: { orchestrator?: unknown; worker?: unknown }; paused?: boolean; allowedChats?: string[]; members?: unknown[];
     allowDirectMessages?: boolean; pollSeconds?: number; maxWorkers?: number; admission?: { mode?: string; chats?: string[]; timeoutSeconds?: number; rules?: unknown[] } }
   const chats = new Map<string, 'mentions' | 'all'>()
@@ -237,13 +307,13 @@ export function migrateSettings(value: unknown): unknown {
   // Observed chats were active only when admission was enabled.
   if (old.admission?.mode !== 'off') for (const chatId of old.admission?.chats ?? []) chats.set(chatId, 'all')
   const feishu = { chats: [...chats].map(([chatId, listen]) => ({ chatId, listen })), directMessages: old.allowDirectMessages ?? true }
-  return withoutRemovedFields({
+  return withoutEngineModelParameters(withoutRemovedFields({
     sources: { feishu: { enabled: true, config: feishu }, github: { enabled: true, config: { pollSeconds: old.pollSeconds ?? 60 } } },
     policy: { ...(old.members ? { members: old.members } : {}), ...(old.admission?.rules ? { rules: old.admission.rules } : {}) },
     eval: { ...(old.admission?.mode ? { mode: old.admission.mode } : {}), ...(old.admission?.timeoutSeconds ? { timeoutSeconds: old.admission.timeoutSeconds } : {}),
       model: old.models?.orchestrator ?? null },
     executor: { model: old.models?.worker ?? null, ...(old.maxWorkers ? { maxWorkers: old.maxWorkers } : {}), paused: old.paused ?? false },
-  })
+  }))
 }
 function withoutRemovedFields(value: Stored): Stored {
   const { executor, policy, sources, ...rest } = value as { executor?: Stored; policy?: Stored; sources?: Record<string, Stored> }

@@ -107,7 +107,6 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (!same(before.executor.blockedCommands, after.executor.blockedCommands)) changes.push({ code: 'blockedCommands', from: before.executor.blockedCommands.join(' '), to: after.executor.blockedCommands.join(' ') })
   if (before.executor.claudePermissionMode !== after.executor.claudePermissionMode) changes.push({ code: 'claudePermissionMode', from: before.executor.claudePermissionMode, to: after.executor.claudePermissionMode })
   if (before.executor.claudeApproval !== after.executor.claudeApproval) changes.push({ code: 'claudeApproval', from: before.executor.claudeApproval, to: after.executor.claudeApproval })
-  if (before.executor.claudeEffort !== after.executor.claudeEffort) changes.push({ code: 'claudeEffort', from: before.executor.claudeEffort, to: after.executor.claudeEffort })
   if (before.executor.claudeUltracode !== after.executor.claudeUltracode) changes.push({ code: 'claudeUltracode', from: before.executor.claudeUltracode, to: after.executor.claudeUltracode })
   // The task types carry most of the execution profile now, so their edits and the global engine are part of the audit trail.
   if (before.executor.engine !== after.executor.engine) changes.push({ code: 'engine', from: before.executor.engine, to: after.executor.engine })
