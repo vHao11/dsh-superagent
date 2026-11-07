@@ -146,6 +146,8 @@ it('accepts a self-authenticated Source trigger directly, without an Eval, and r
   const ticket = repo.tickets.get(first.decision!.ticketId!) as Ticket
   expect(ticket.mandate.strength).toBe('explicit')
   expect(ticket.origin.triggerId).toBe('q1')
+  // The ticket's Execution reads the Source-declared task type from the stored Trigger.
+  expect(repo.triggers.get('q1')?.taskType).toBe('consult')
   const repeat = engine.acceptSourceTrigger(source, { title: 'Question', scope: 'Question', taskType: 'consult' })
   expect(repeat.result).toBe('duplicate')
   expect(repeat.decision?.id).toBe(first.decision?.id)

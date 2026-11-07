@@ -55,13 +55,16 @@ export class Engine {
    */
   acceptSourceTrigger(trigger: Trigger, accept: { title: string; scope: string; taskType?: string }): { result: ReceiveResult; decision?: Decision } {
     return this.repo.atomic(() => {
-      const result = this.intake.receive(trigger)
+      // The ticket's Execution reads the task type the Source declared from the stored Trigger, so record it there too;
+      // an already snapshotted task type wins.
+      const accepted = accept.taskType && trigger.taskType === undefined ? { ...trigger, taskType: accept.taskType } : trigger
+      const result = this.intake.receive(accepted)
       if (result === 'duplicate') {
-        const decisionId = this.repo.triggers.disposition(trigger.id)?.decisionId
+        const decisionId = this.repo.triggers.disposition(accepted.id)?.decisionId
         const decision = decisionId ? this.repo.decisions.get(decisionId) : undefined
         return { result, ...decision ? { decision } : {} }
       }
-      const decision = this.evals.acceptDirect(trigger.id, { kind: 'accept', title: accept.title, scope: accept.scope,
+      const decision = this.evals.acceptDirect(accepted.id, { kind: 'accept', title: accept.title, scope: accept.scope,
         reason: { code: 'sourceAccepted' }, ...accept.taskType ? { taskType: accept.taskType, taskTypeSource: 'source' as const } : {} })
       return { result, decision }
     })
