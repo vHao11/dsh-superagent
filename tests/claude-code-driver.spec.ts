@@ -5,8 +5,10 @@ import type { ChildProcessWithoutNullStreams, SpawnOptions } from 'node:child_pr
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it, vi } from 'vitest'
 import { ClaudeCodeDriver, type ClaudeCodeOptions } from '../src/executor/claude-code.ts'
-import { ExecutorConfigSchema } from '../src/policy.ts'
+import { claudeSettingsForTicket, executorProfile } from '../src/app/executor-profile.ts'
+import { ExecutorConfigSchema, SettingsSchema } from '../src/policy.ts'
 import { KV } from '../src/kv.ts'
+import type { Ticket } from '../src/core/index.ts'
 
 /** One written stream-json line, as the fake process received it. */
 type Line = Record<string, unknown>
@@ -252,11 +254,30 @@ describe('native Claude Code driver turns', () => {
   })
 })
 
+it('reads the Claude Code profile a Ticket snapshotted, or its type\'s when the Ticket predates the snapshot', () => {
+  const settings = SettingsSchema.parse({ executor: { claudeModel: 'claude-global', claudePermissionMode: 'plan', claudeApproval: 'deny',
+    claudeEffort: 'low', claudeUltracode: true, taskTypes: [{ id: 'native', name: 'Native', description: 'Native work.',
+      directory: 'C:/work/native', engine: 'claude-code', claude: { model: 'claude-type', permissionMode: 'auto', approval: 'ask',
+        effort: 'high', ultracode: false } }] } })
+  const ticket = (execution: Record<string, unknown>): Ticket => ({ execution: { name: 'native-1', directory: 'C:/work/native',
+    assignment: '', ...execution } }) as Ticket
+  // A Ticket with a snapshot reads it, also after its type's profile changes.
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native', claude: { model: 'claude-snap', permissionMode: 'default',
+    approval: 'approve', effort: '', ultracode: false } }))).toMatchObject({ claudeModel: 'claude-snap', claudePermissionMode: 'default',
+      claudeApproval: 'approve', claudeEffort: '', claudeUltracode: false })
+  // A Ticket accepted before the snapshot resolves its type's profile over the executor fallbacks.
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'native' }))).toMatchObject({ claudeModel: 'claude-type',
+    claudePermissionMode: 'auto', claudeApproval: 'ask', claudeEffort: 'high', claudeUltracode: false, claudeBin: '' })
+  // A type with no profile inherits the global fallbacks, and the executable stays machine-level.
+  expect(claudeSettingsForTicket(settings, ticket({ taskType: 'removed' }))).toMatchObject({ claudeModel: 'claude-global',
+    claudePermissionMode: 'plan', claudeApproval: 'deny', claudeEffort: 'low', claudeUltracode: true })
+  expect(executorProfile(settings, settings.executor.taskTypes[0]).claude.bin).toBe('')
+})
+
 // A paid, live turn through the configured Claude executable. Run with `CLAUDE_CODE_SMOKE=1` in a directory the
 // native CLI already trusts; the ordinary suite stays offline.
 const smoke = process.env.CLAUDE_CODE_SMOKE === '1' ? it : it.skip
-describe('native Claude Code driver against the real CLI', () => {
-  smoke('runs one real turn and records its terminal report', async () => {
+describe('native Claude Code driver against the real CLI', () => {  smoke('runs one real turn and records its terminal report', async () => {
     const test = harness({ stored: false, real: 'D:/hao11aiproject/envfixworkspace/probe' })
     const prompt = 'Do not use any tools. Reply with exactly "OK" on the first line, then on the second line: '
       + 'DSH_REPORT {"state":"ready","summary":"Smoke test"}'

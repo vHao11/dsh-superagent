@@ -132,6 +132,14 @@ export class SourceRegistry implements SourceScope {
       },
     }
   }
+  /** Whether `source`'s own authentication admits its senders, while it is installed, enabled and listening. */
+  authenticates(source: string, settings = this.settings()): boolean {
+    const kind = this.kinds.get(source)
+    if (!kind?.authenticates) return false
+    const instance = this.resolve(kind, settings.sources[source])
+    if (!instance.enabled) return false
+    return kind.scope ? kind.scope({ meta: {} }, instance.config).listened : true
+  }
   scope(input: { source: string; meta: Record<string, unknown> }, settings = this.settings()): ScopeResult {
     const kind = this.kinds.get(input.source)
     const stored = settings.sources[input.source]

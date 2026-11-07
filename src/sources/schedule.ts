@@ -23,6 +23,8 @@ export const ScheduleConfigSchema = z.object({
   schedules: z.array(ScheduleEntry)
     .refine(items => new Set(items.map(item => item.id)).size === items.length, 'Duplicate schedule IDs')
     .default([]),
+  /** Fixed off: a scheduled event has no person, so it continues no conversation; the panel shows a read-only note instead. */
+  conversation: z.literal('off').default('off'),
 }).strict()
 export type ScheduleConfig = z.infer<typeof ScheduleConfigSchema>
 
@@ -38,6 +40,7 @@ export function scheduleTrigger(entry: { id: string; every: string; text: string
     human: false,
     at,
     text: entry.text,
+    continuity: 'per-message',
     meta: { scheduleId: entry.id, everySeconds: seconds },
   }
 }
@@ -62,7 +65,9 @@ export const scheduleKind: SourceKind<ScheduleConfig> = {
     { key: 'pollSeconds', type: 'number', advanced: true, min: 5, max: 300,
       label: { zh: '检查间隔 / 秒', en: 'Check interval / seconds' },
       hint: { zh: '多久检查一次有没有到点的任务；不改变任务自身的间隔。', en: 'How often to check for due tasks; does not change a task\'s own interval.' } },
+    { key: 'conversation', type: 'fact', label: { zh: '连续会话', en: 'Continuous conversation' } },
   ],
+  facts: () => ({ conversation: { zh: '每条消息独立（定时任务没有人类消息，不适用）', en: 'Each message separately (scheduled tasks have no person, so it does not apply)' } }),
   health: ['schedule'],
   // Scheduled events have no sender or conversation: each one is observed in full, and the admission table decides.
   scope: () => ({ listened: true, observed: true, row: 'schedules' }),

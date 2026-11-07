@@ -49,24 +49,42 @@ export class Engine {
    */
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
   /**
-   * A Source's self-authenticated explicit request: store its Trigger and, when `accept` is given, create the ticket directly
-   * as the Source decides it, without an Eval or the Policy gate. The Source's own authentication vouches for the sender; the
-   * BQA Source is the only caller. A repeated Trigger returns the Decision recorded the first time.
+   * A Source's self-authenticated explicit request: store its Trigger and either continue the one host Ticket of its
+   * `per-thread` conversation or create a Ticket directly as the Source decides it, without an Eval or the Policy gate. The
+   * Source's own authentication vouches for the sender; the BQA Source is the only caller. The answer names the accepted
+   * Ticket, the Decision a new one was accepted with, or the Decision a repeated Trigger recorded the first time.
    */
-  acceptSourceTrigger(trigger: Trigger, accept: { title: string; scope: string; taskType?: string }): { result: ReceiveResult; decision?: Decision } {
+  acceptSourceTrigger(trigger: Trigger, accept: { title: string; scope: string; taskType?: string }):
+    { result: ReceiveResult; decision?: Decision; ticketId?: string } {
     return this.repo.atomic(() => {
       // The ticket's Execution reads the task type the Source declared from the stored Trigger, so record it there too;
       // an already snapshotted task type wins.
       const accepted = accept.taskType && trigger.taskType === undefined ? { ...trigger, taskType: accept.taskType } : trigger
       const result = this.intake.receive(accepted)
       if (result === 'duplicate') {
-        const decisionId = this.repo.triggers.disposition(accepted.id)?.decisionId
-        const decision = decisionId ? this.repo.decisions.get(decisionId) : undefined
-        return { result, ...decision ? { decision } : {} }
+        const disposition = this.repo.triggers.disposition(accepted.id)
+        const decision = disposition?.decisionId ? this.repo.decisions.get(disposition.decisionId) : undefined
+        const ticketId = decision?.ticketId ?? disposition?.fanout.find(id => this.repo.tickets.get(id))
+        return { result, ...decision ? { decision } : {}, ...ticketId ? { ticketId } : {} }
+      }
+      // A continuous conversation reuses the host Ticket Intake delivered the message to (or just resumed under its unchanged
+      // Mandate): the question joins its Inputs and the worker continues in the same Session, so no Eval, Decision or Ticket.
+      const host = accepted.continuity === 'per-thread'
+        ? this.repo.triggers.disposition(accepted.id)?.fanout.map(id => this.repo.tickets.get(id))
+          .find(ticket => !!ticket && liveTicket(ticket) && ticket.mandate.actor.id === accepted.actor.id)
+        : undefined
+      if (host) {
+        // The message is this Ticket's now, so any queue entry Intake made for it is withdrawn.
+        this.evals.withdraw(accepted)
+        // The question's own retrieval parameters ride with its Input as a routing note, since the Ticket scope has the first one.
+        const requestId = accepted.channel?.address.requestId
+        if (requestId) this.tickets.noteInput(host.id, accepted.id,
+          `本轮检索参数：requestId=${requestId}。使用检索工具时把该 requestId 原样传入（优先于工单 scope 中的值）；本行不要写入答案正文。`)
+        return { result, ticketId: host.id }
       }
       const decision = this.evals.acceptDirect(accepted.id, { kind: 'accept', title: accept.title, scope: accept.scope,
         reason: { code: 'sourceAccepted' }, ...accept.taskType ? { taskType: accept.taskType, taskTypeSource: 'source' as const } : {} })
-      return { result, decision }
+      return { result, decision, ...decision.ticketId ? { ticketId: decision.ticketId } : {} }
     })
   }
   /**

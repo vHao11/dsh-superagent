@@ -3,6 +3,7 @@ import type { EngineForSources, ReceiveResult, Trigger } from '../core/index.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
+import { continuityOf } from '../sources/conversation.ts'
 import type { SourceContext } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Outbox } from './outbox.ts'
@@ -43,13 +44,22 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined
     },
-    // Source defaults are snapshotted onto the Trigger when it is received.
+    // Source defaults are snapshotted onto the Trigger when it is received: its task type, and how its configured conversation
+    // mode (when the kind has one) treats each message.
     receive: trigger => {
-      if (trigger.taskType !== undefined) return deps.receive(trigger)
       const descriptor = deps.sources.kind(kind.kind)
       const instance = deps.sources.instance(kind.kind)
-      const taskType = instance?.enabled ? descriptor?.taskType?.(trigger, instance.config) : undefined
-      return deps.receive(taskType ? { ...trigger, taskType } : trigger)
+      const config = instance?.enabled ? instance.config : undefined
+      let next = trigger
+      if (next.taskType === undefined) {
+        const taskType = config ? descriptor?.taskType?.(next, config) : undefined
+        if (taskType) next = { ...next, taskType }
+      }
+      if (next.continuity === undefined && config) {
+        const mode = config.conversation
+        if (mode === 'off' || mode === 'thread') next = { ...next, continuity: continuityOf(mode) }
+      }
+      return deps.receive(next)
     },
     atomic: work => store.atomic(work),
     state: {

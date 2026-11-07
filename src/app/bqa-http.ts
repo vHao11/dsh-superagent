@@ -66,21 +66,24 @@ export function registerBqaHttp(ctx: Context, host: BqaHttpHost): () => void {
         if (prior.question !== input.question) throw new RouteError(409, 'This requestId was already used for a different question')
         return { triggerId: prior.triggerId, ticketId: prior.ticketId ?? null, duplicate: true }
       }
-      const trigger = bqaTrigger(input)
+      const trigger = bqaTrigger(input, config)
       let decision: Decision | undefined
       let duplicate = false
+      // A continuous conversation reuses the host Ticket the Trigger continued; only the first question of a window creates one.
+      let ticketId: string | undefined
       if (config.autoAccept === 'explicit') {
         const accepted = host.engine.acceptSourceTrigger(trigger, { title: bqaTitle(input.question), scope: bqaScope(input),
           taskType: config.taskType })
         decision = accepted.decision
         duplicate = accepted.result === 'duplicate'
+        ticketId = accepted.ticketId
       } else {
         const result = host.engine.receive(trigger)
         duplicate = result === 'duplicate'
         const decisionId = host.store.triggers.disposition(trigger.id)?.decisionId
         decision = decisionId ? host.store.decisions.get(decisionId) : undefined
       }
-      const ticketId = producedTicket(host, decision)
+      ticketId ??= producedTicket(host, decision)
       host.store.set(KV.bqa.request(input.requestId), { triggerId: trigger.id, ...ticketId ? { ticketId } : {}, question: input.question,
         at: new Date().toISOString() })
       host.requestPass()

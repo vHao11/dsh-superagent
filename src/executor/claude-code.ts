@@ -13,51 +13,21 @@ import { join } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ToolCallId, createAssistantMessage, createToolResultMessage, type ContentBlock, type ToolSchema, type UserMessage }
+import { ToolCallId, createAssistantMessage, createToolResultMessage, type ContentBlock, type UserMessage }
   from '@deepseek-ai/dsh-llm'
 import type { EpochHeader, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { EngineName, Ticket } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
+import {
+  ASK_TOOL, ASK_TOOL_SCHEMA, BRIDGE_PROMPT, CardResources, INTERRUPT_WAIT_MS, abortError, asString, delay, isRecord,
+  jsonArguments, mapToolName, permissionQuestion, recordWorkerReport, stripWorkerReport, textContent, toToolQuestion,
+  toolResultContent, type DshAnswer, type DshQuestion, type StepDecision, type StepEnd, type SteppableAgent,
+  type UserQuestionsService, type WorkerReport,
+} from './native-shared.ts'
+export { parseWorkerReport, permissionQuestion, stripWorkerReport, toolResultContent } from './native-shared.ts'
 
-/** The failure states a worker may report through the `DSH_REPORT` line. */
-type ReportState = 'progress' | 'ready' | 'blocked' | 'failed' | 'dropped'
-/** What a worker tells the harness at the end of a turn. */
-export interface WorkerReport {
-  state: ReportState
-  summary: string
-  human_action?: string
-  question_for_trigger_id?: string
-  pr_number?: number
-  reply_to_trigger_id?: string
-}
-/** One question in the DSH service's vocabulary. */
-export interface DshQuestion {
-  id: string
-  question: string
-  header?: string
-  options?: { label: string; description?: string }[]
-  multiSelect?: boolean
-}
-/** One answer as DSH's question service returns it. */
-export interface DshAnswer { id: string; selected: string[]; custom?: string }
-/** The part of the `userQuestions` service this driver uses. */
-interface UserQuestionsService {
-  ask(request: { questions: DshQuestion[]; agent?: Agent; signal?: AbortSignal; wait?: { callId: ToolCallId } })
-    : Promise<{ answers: DshAnswer[] }>
-}
-/** A decision handed to the loop's replaced `step`. */
-interface StepDecision {
-  messages: readonly UserMessage[]
-  turn?: number
-  step?: number
-  signal?: AbortSignal
-}
-/** The terminal state a replaced step reports to the loop. */
-type StepEnd = { kind: 'completed' } | { kind: 'max-tokens' }
-/** The loop-owned agent shape the driver replaces. */
-type SteppableAgent = Agent & { step: (decision: StepDecision) => Promise<StepEnd | null> }
 /** Options used to attach the bridge to one DSH worker agent. */
 export interface ClaudeCodeOptions {
   readonly context: Context
@@ -114,89 +84,11 @@ interface ClaudeControlResponseEvent extends ClaudeEvent {
   response?: { subtype?: unknown; request_id?: unknown; error?: unknown }
 }
 
-const REPORT_STATES: readonly ReportState[] = ['progress', 'ready', 'blocked', 'failed', 'dropped']
-const TERMINAL_STATES: readonly ReportState[] = ['ready', 'blocked', 'failed', 'dropped']
-const REPORT_LINE = /^[ \t]*DSH_REPORT[ \t]+(\{.*\})[ \t]*$/gm
-const INTERRUPT_WAIT_MS = 1500
-const REPORT_TOOL = 'orchestrator_report'
-const READ_TOOL = 'orchestrator_read'
-const ASK_TOOL = 'ask_user_question'
-/** The most resource text one user message carries to Claude; cards hold previews and a read path beyond it. */
-const EXPANDED_CHARS = 16_000
-/** One `orchestrator_read` page: the tool's maximum. */
-const RESOURCE_PAGE = 8_000
-/** Resource paths a worker may read and a card may reference. */
-const RESOURCE_PATH = /^(?:ticket|trigger|thread|prompts|feishu|github)\/[^\s]+$/
-const BRIDGE_PROMPT = [
-  'You are the implementation worker for a DeepSeek Harness (DSH) ticket. Work directly in the current directory with your normal tools.',
-  'Ticket cards arrive as JSON: ticket_id, title, assignment, and trigger (with trigger_id, preview, read). A referenced resource\'s full text is appended below the card in a <resource path="..."> block; a preview is only a summary.',
-  'DSH_SUPERAGENT_NAME is the ticket\'s short name (use it as the branch name when you open a pull request), DSH_SUPERAGENT_DIR is its directory, DSH_SUPERAGENT_TICKET its id, and other DSH_SUPERAGENT_* variables name the repository and accounts.',
-  'When you finish, are blocked, fail, drop the work, or make meaningful progress, call no more tools and end your final assistant message with exactly one line:',
-  'DSH_REPORT {"state":"ready|blocked|failed|dropped|progress","summary":"one or two sentences","human_action":"optional question for a person","question_for_trigger_id":"optional trigger that raised it","reply_to_trigger_id":"optional trigger this answers","pr_number":123}',
-  'Use "ready" for complete work, "progress" before or between long stretches of work, "blocked" when you need a person (put the question in human_action), "failed" when the work failed, and "dropped" when nothing should be done. Include pr_number when you opened or updated a pull request for the ticket so it is claimed, name question_for_trigger_id when the question belongs to a trigger, and reply_to_trigger_id when the report answers one. Omit optional fields you do not need.',
-  'Do not put the line in a code fence, do not use it for anything else, and do not mention it to anyone. The harness records it with the ticket\'s report tool; you do not call that tool yourself.',
-].join('\n')
-/** The timed `ask_user_question` schema the Session must record for DSH's question projection to expose cards. */
-const ASK_TOOL_SCHEMA: ToolSchema = {
-  name: ASK_TOOL,
-  description: 'Ask the user one or more questions and wait for the answer.',
-  parameters: {
-    type: 'object',
-    properties: {
-      questions: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            question: { type: 'string' },
-            header: { type: 'string' },
-            options: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: { label: { type: 'string' }, description: { type: 'string' } },
-                required: ['label'],
-              },
-            },
-            multi_select: { type: 'boolean' },
-          },
-          required: ['id', 'question'],
-        },
-      },
-      timeout: { type: 'integer', description: 'Kept for DSH question-card projection; the native bridge waits without a timeout.' },
-    },
-    required: ['questions'],
-  },
-}
+/** Claude's tool names mapped to the names the DSH panel renders. */
 const TOOL_NAMES: Readonly<Record<string, string>> = {
   AskUserQuestion: ASK_TOOL, Bash: 'bash', PowerShell: 'pwsh', Read: 'read', Write: 'write', Edit: 'edit', MultiEdit: 'edit',
   Glob: 'glob', Grep: 'grep', WebSearch: 'web_search', WebFetch: 'web_fetch', Task: 'subagent', TodoWrite: 'todo_write',
   NotebookEdit: 'notebook_edit', Skill: 'skill', SendMessage: 'send_message', ListAgents: 'list_agents',
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
-const asString = (value: unknown): string | undefined => typeof value === 'string' && value ? value : undefined
-const delay = (ms: number): Promise<void> => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref?.() })
-const abortError = (signal?: AbortSignal): Error => signal?.reason instanceof Error ? signal.reason : new Error('The Claude Code turn was cancelled')
-/**
- * Collect the worker-readable resource paths a ticket card references, so the native process sees the full text a
- * DSH worker would read on demand instead of only the card's preview.
- * @param value - The parsed user message.
- * @param paths - The set the paths are added to.
- * @param depth - The nesting depth already walked.
- */
-function collectResources(value: unknown, paths: Set<string>, depth = 0): void {
-  if (depth > 8 || paths.size >= 6) return
-  if (Array.isArray(value)) {
-    for (const item of value) collectResources(item, paths, depth + 1)
-    return
-  }
-  if (!isRecord(value)) return
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item === 'string' && (key === 'read' || key === 'assignment_read') && RESOURCE_PATH.test(item)) paths.add(item)
-    else collectResources(item, paths, depth + 1)
-  }
 }
 
 /**
@@ -217,13 +109,13 @@ export function resolveClaudeBin(configured: string): string {
 
 /** Map a Claude tool name to the DSH name the panel renders, leaving unknown tools as Claude named them. */
 export function displayToolName(name: string): string {
-  return TOOL_NAMES[name] ?? name
+  return mapToolName(name, TOOL_NAMES)
 }
 
 /** Serialize one Claude tool input for a DSH `tool/call`, normalizing `AskUserQuestion` into DSH question arguments. */
 export function toolArguments(name: string, input: unknown): string {
   if (name === 'AskUserQuestion') return JSON.stringify({ questions: questionsFromClaude(input).tool })
-  try { return JSON.stringify(input ?? {}) } catch { return '{}' }
+  return jsonArguments(input)
 }
 
 /**
@@ -290,89 +182,6 @@ export function answersForClaude(questions: readonly DshQuestion[], texts: reado
   return result
 }
 
-/**
- * Build the permission card for one Claude tool call.
- * @param toolName - The Claude tool name, such as `Bash`.
- * @param input - The tool input, summarized for the person.
- * @returns A single-choice question with Allow once and Deny.
- */
-export function permissionQuestion(toolName: string, input: unknown): DshQuestion {
-  const detail = permissionDetail(toolName, input)
-  return {
-    id: 'permission',
-    header: 'Tool permission',
-    question: `Claude Code wants to use ${toolName}${detail ? `:\n${detail}` : ''}\n\nAllow this call?`,
-    options: [
-      { label: 'Allow once', description: 'Run this tool call now.' },
-      { label: 'Deny', description: 'Refuse this tool call.' },
-    ],
-    multiSelect: false,
-  }
-}
-
-/** Summarize a tool input for a permission card, preferring the command, path, pattern, URL and task fields people recognize. */
-export function permissionDetail(toolName: string, input: unknown): string {
-  const record = isRecord(input) ? input : {}
-  const parts = [
-    asString(record.command) ? `Command: ${record.command}` : undefined,
-    asString(record.file_path) ? `Path: ${record.file_path}` : asString(record.path) ? `Path: ${record.path}` : asString(record.notebook_path) ? `Path: ${record.notebook_path}` : undefined,
-    asString(record.pattern) ? `Pattern: ${record.pattern}` : undefined,
-    asString(record.url) ? `URL: ${record.url}` : undefined,
-    asString(record.description) ? `Task: ${record.description}` : undefined,
-    asString(record.prompt) ? `Prompt: ${record.prompt}` : undefined,
-  ].filter((part): part is string => part !== undefined)
-  let detail = parts.join('\n')
-  if (!detail) {
-    try { detail = JSON.stringify(input ?? {}) } catch { detail = String(input) }
-  }
-  return detail.length > 1200 ? `${detail.slice(0, 1200)}…` : detail
-}
-
-/** Convert a Claude tool result's content into DSH content blocks, replacing images with a text marker. */
-export function toolResultContent(content: unknown): ContentBlock[] {
-  if (typeof content === 'string') return [{ type: 'text', text: content }]
-  if (Array.isArray(content)) {
-    const blocks = content.flatMap((block): ContentBlock[] => {
-      if (typeof block === 'string') return [{ type: 'text', text: block }]
-      if (!isRecord(block)) return [{ type: 'text', text: String(block) }]
-      if (block.type === 'text' && typeof block.text === 'string') return [{ type: 'text', text: block.text }]
-      if (block.type === 'image') return [{ type: 'text', text: '[image]' }]
-      try { return [{ type: 'text', text: JSON.stringify(block) }] } catch { return [{ type: 'text', text: String(block) }] }
-    })
-    return blocks.length ? blocks : [{ type: 'text', text: '' }]
-  }
-  if (content === undefined || content === null) return [{ type: 'text', text: '' }]
-  try { return [{ type: 'text', text: JSON.stringify(content) }] } catch { return [{ type: 'text', text: String(content) }] }
-}
-
-/** Parse one worker report object, accepting only a known state and a nonempty summary. */
-export function parseWorkerReport(value: unknown): WorkerReport | undefined {
-  if (!isRecord(value)) return undefined
-  const state = typeof value.state === 'string' && (REPORT_STATES as readonly string[]).includes(value.state) ? value.state as ReportState : undefined
-  const summary = typeof value.summary === 'string' ? value.summary.trim() : ''
-  if (!state || !summary) return undefined
-  const report: WorkerReport = { state, summary }
-  if (asString(value.human_action)) report.human_action = (value.human_action as string).trim()
-  if (asString(value.question_for_trigger_id)) report.question_for_trigger_id = value.question_for_trigger_id as string
-  if (typeof value.pr_number === 'number' && Number.isInteger(value.pr_number) && value.pr_number > 0) report.pr_number = value.pr_number
-  if (asString(value.reply_to_trigger_id)) report.reply_to_trigger_id = value.reply_to_trigger_id as string
-  return report
-}
-
-/**
- * Remove `DSH_REPORT` lines from assistant text and return the last valid report.
- * @param text - One assistant text block as Claude produced it.
- * @returns The visible text and the report, when the text carried one.
- */
-export function stripWorkerReport(text: string): { text: string; report?: WorkerReport } {
-  let report: WorkerReport | undefined
-  const visible = text.replace(REPORT_LINE, (_line, json: string) => {
-    try { report = parseWorkerReport(JSON.parse(json)) ?? report } catch { /* Not a valid report; leave the line out and continue. */ }
-    return ''
-  }).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-  return { text: visible, ...(report ? { report } : {}) }
-}
-
 /** Map Claude assistant content blocks to DSH content and collect a trailing worker report. */
 export function mapAssistantContent(content: unknown): { content: ContentBlock[]; report?: WorkerReport } {
   const blocks: ContentBlock[] = []
@@ -402,16 +211,6 @@ export function mapAssistantContent(content: unknown): { content: ContentBlock[]
     }
   }
   return { content: blocks, ...(report ? { report } : {}) }
-}
-
-/** Convert one DSH user message into Claude's stream-json user content. */
-function userContent(message: UserMessage): { type: 'text'; text: string }[] {
-  return message.content.flatMap((block): { type: 'text'; text: string }[] => {
-    if (block.type === 'text') return [{ type: 'text', text: block.text }]
-    if (block.type === 'image') return [{ type: 'text', text: '[image omitted: the native Claude Code process cannot read this attachment]' }]
-    if (block.type === 'file') return [{ type: 'text', text: '[file omitted]' }]
-    return []
-  })
 }
 
 /**
@@ -444,7 +243,7 @@ export class ClaudeCodeDriver {
   private lastTurn = 1
   private lastStep = 1
   private reportSeq = 0
-  private readSeq = 0
+  private readonly resources: CardResources
   private pendingReport?: WorkerReport
   private reportedTerminal = false
   /** Tool-call log seqs that still await a result, by Claude tool-use id. */
@@ -465,6 +264,7 @@ export class ClaudeCodeDriver {
     this.settings = options.settings
     this.logger = options.logger
     this.environment = options.environment
+    this.resources = new CardResources(options.agent, options.logger, 'Claude Code', 'claude-read')
     this.spawnProcess = options.spawn ?? ((command, args, spawnOptions) => spawn(command, [...args], spawnOptions) as ChildProcessWithoutNullStreams)
     this.claudeSessionId = this.store.get(KV.sessions.claude(this.agent.id))?.sessionId
     const onAbort = () => this.dispose()
@@ -607,13 +407,13 @@ export class ClaudeCodeDriver {
     const stopped = new Promise<void>(done => { stop = done })
     const promise = new Promise<ClaudeResultEvent>((res, rej) => { resolve = res; reject = rej })
     const onAbort = () => {
-      if (!this.child) { reject(abortError(signal)); return }
+      if (!this.child) { reject(abortError(signal, 'The Claude Code turn was cancelled')); return }
       try { this.write({ type: 'control_request', request_id: `interrupt:${randomUUID()}`, request: { subtype: 'interrupt' } }) } catch {
         this.stopProcess()
       }
       void Promise.race([stopped, delay(INTERRUPT_WAIT_MS)]).then(() => {
         if (this.active === active) this.stopProcess()
-        reject(abortError(signal))
+        reject(abortError(signal, 'The Claude Code turn was cancelled'))
       })
     }
     const active: ActiveTurn = {
@@ -635,58 +435,9 @@ export class ClaudeCodeDriver {
 
   /** Turn one user message into Claude content, expanding card resource references to the text a DSH worker would read. */
   private async contentFor(message: UserMessage, signal: AbortSignal): Promise<{ type: 'text'; text: string }[]> {
-    const blocks = userContent(message)
-    for (const block of blocks) block.text = await this.expandResources(block.text, signal)
+    const blocks = textContent(message, 'the native Claude Code process cannot read this attachment')
+    for (const block of blocks) block.text = await this.resources.expand(block.text, signal)
     return blocks
-  }
-
-  /** Append the full text of the resources a card references, at most {@link EXPANDED_CHARS} per message. */
-  private async expandResources(text: string, signal: AbortSignal): Promise<string> {
-    let value: unknown
-    try { value = JSON.parse(text) } catch { return text }
-    if (!isRecord(value)) return text
-    const paths = new Set<string>()
-    collectResources(value, paths)
-    if (!paths.size) return text
-    const sections: string[] = []
-    let remaining = EXPANDED_CHARS
-    for (const path of paths) {
-      if (remaining <= 0) break
-      const body = await this.readResourceText(path, remaining, signal)
-      if (!body) continue
-      sections.push(`<resource path="${path}">\n${body}\n</resource>`)
-      remaining -= body.length
-    }
-    return sections.length ? `${text}\n\nThe full text of the referenced resources:\n${sections.join('\n\n')}` : text
-  }
-
-  /** Read pages of one resource through the worker's real `orchestrator_read` tool. */
-  private async readResourceText(path: string, limit: number, signal: AbortSignal): Promise<string | undefined> {
-    if (!this.agent.ctx.tools.get(READ_TOOL)) return undefined
-    let output = ''
-    let offset = 0
-    try {
-      while (output.length < limit) {
-        const result = await this.agent.ctx.tools.execute({
-          callId: ToolCallId(`claude-read:${++this.readSeq}`), name: READ_TOOL,
-          arguments: { resource: path, offset, limit: Math.min(RESOURCE_PAGE, limit - output.length) },
-          agent: this.agent, signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-        })
-        if (result.isError) return output || undefined
-        const text = result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-        let page: unknown
-        try { page = JSON.parse(text) } catch { return `${output}${text}`.slice(0, limit) }
-        if (!isRecord(page) || typeof page.text !== 'string') return `${output}${text}`.slice(0, limit)
-        output += page.text
-        const next = typeof page.next_offset === 'number' ? page.next_offset : undefined
-        if (next === undefined || next <= offset) break
-        offset = next
-      }
-    } catch (error) {
-      this.logger.debug('dsh-superagent could not read %s for the native Claude Code worker %s: %s', path, this.agent.id, String(error))
-      return output || undefined
-    }
-    return output.slice(0, limit) || undefined
   }
 
   /** Handle one stdout line, in order with the lines before it. */
@@ -956,34 +707,12 @@ export class ClaudeCodeDriver {
     const report = this.pendingReport
     this.pendingReport = undefined
     if (!report) return
-    const tool = this.agent.ctx.tools.get(REPORT_TOOL)
-    if (!tool) {
-      this.logger.warn('dsh-superagent Claude Code worker %s reported %s but the worker has no %s tool', this.agent.id, report.state, REPORT_TOOL)
-      return
-    }
-    const callId = ToolCallId(`claude-report:${++this.reportSeq}`)
-    const callSeq = this.session.append('tool/call', {
-      turn: this.lastTurn, step: this.lastStep, callId, name: REPORT_TOOL, arguments: JSON.stringify(report),
-    }).seq
-    let content: ContentBlock[] = [{ type: 'text', text: 'The report was recorded.' }]
-    let isError = false
-    try {
-      const result = await this.agent.ctx.tools.execute({
-        callId, name: REPORT_TOOL, arguments: report, agent: this.agent,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
-      })
-      content = result.content.length ? [...result.content] : content
-      isError = result.isError
-    } catch (error) {
-      isError = true
-      content = [{ type: 'text', text: `The worker report could not be recorded: ${error instanceof Error ? error.message : String(error)}` }]
-    }
-    if (!isError && TERMINAL_STATES.includes(report.state)) this.reportedTerminal = true
-    this.session.append('tool/result', {
-      turn: this.lastTurn, step: this.lastStep,
-      message: createToolResultMessage({ callId, content, isError }),
-      ...(isError ? { error: { name: 'WorkerReportError', code: 'WORKER_REPORT_FAILED' } } : {}),
-    }, { surfaceOp: 'append', sourceEventSeqs: [callSeq] })
+    const result = await recordWorkerReport({
+      agent: this.agent, session: this.session, logger: this.logger, report,
+      turn: this.lastTurn, step: this.lastStep, callId: ToolCallId(`claude-report:${++this.reportSeq}`), signal,
+      engine: 'Claude Code',
+    })
+    if (result.terminal) this.reportedTerminal = true
   }
 
   /** Keep the last stderr lines for a process failure message. */
@@ -1056,17 +785,6 @@ export class ClaudeCodeDriver {
     active?.reject(new Error('The native Claude Code worker was disposed'))
     this.stopProcess()
     try { this.reader?.close() } catch { /* Already closed. */ }
-  }
-}
-
-/** Convert a service question to the tool-schema spelling used in `tool/call` arguments. */
-function toToolQuestion(question: DshQuestion): Record<string, unknown> {
-  return {
-    id: question.id,
-    question: question.question,
-    ...(question.header ? { header: question.header } : {}),
-    ...(question.options ? { options: question.options } : {}),
-    ...(question.multiSelect ? { multi_select: true } : {}),
   }
 }
 

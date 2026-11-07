@@ -143,6 +143,7 @@ The Source must still listen to the original Thread, except for the operator's i
 - An inferred Mandate needs `auto` mode and its matched rules still enabled.
 - A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell.
 - A bot's Mandate requires that bot to remain on the Source's bot list. Inferred table and bot Mandates also need `auto` mode and enabled matched rules.
+- An explicit Mandate of a Source that authenticates its senders itself passes while that Source is installed, enabled and listening; it needs no allowed-list entry. Only BQA declares this (`SourceKind.authenticates`), because its shared secret authenticates every inbound question. The exception is limited to `via: 'addressed'` explicit Mandates and to a Source that keeps listening.
 - Other Mandates require the sender to remain on the Source's allowed list.
 
 If revalidation fails, the Ticket stays ended and takes none of its waiting messages. Each message is treated as having reached no Ticket; if no other Ticket owns it, it goes to Eval. The main Session is not told it reached a worker. This also applies after a processing pause. Attaching to the Ticket is refused, and further work requires a new accept.

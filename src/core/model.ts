@@ -36,6 +36,11 @@ export interface Trigger {
   url?: string
   /** The Source's configured default task type for this Trigger, set when the Source receives it; classification uses it when nothing explicit is given. */
   taskType?: string
+  /**
+   * Source-declared conversation: `per-message` when every message is its own conversation, or `per-thread` when messages on
+   * one Thread continue one conversation, which may reuse one Ticket and its worker Session. Absent is the pre-setting behavior.
+   */
+  continuity?: 'per-message' | 'per-thread'
   /** Source-native details for adapters; the core never interprets them. */
   meta: Record<string, unknown>
 }
@@ -318,11 +323,30 @@ export interface Ticket {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-/** The engine that runs a ticket's assignments: DeepSeek Harness's own agent loop, or a native persistent Claude Code process. */
-export const ENGINE_NAMES = ['dsh', 'claude-code'] as const
+/** The engine that runs a ticket's assignments: DeepSeek Harness's own agent loop, or a native persistent Claude Code or opencode process. */
+export const ENGINE_NAMES = ['dsh', 'claude-code', 'opencode'] as const
 export type EngineName = (typeof ENGINE_NAMES)[number]
+/** How Claude Code treats a tool call its permission mode does not settle: its own mode first, then the bridge's approval. */
+export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions'
+/** How the bridge answers a Claude Code tool call the permission mode routes to it: ask a person, allow it, or refuse it. */
+export type ClaudeApproval = 'ask' | 'approve' | 'deny'
+/** Reasoning effort passed as Claude Code's `--effort`; empty keeps the CLI's own level for the model. */
+export type ClaudeEffort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** How the bridge answers an opencode permission request: ask a person, allow, refuse, or the smart default (allow read-only calls, ask for the rest). */
+export type OpencodeApproval = 'ask' | 'approve' | 'deny' | 'smart'
+/** The permission preset an opencode worker starts from; Phase 1 applies it to opencode's own global configuration. */
+export type OpencodePermissionPreset = 'smart' | 'safe' | 'read-only' | 'full' | 'custom'
+/** One ordered opencode permission rule: later rules win, and no match asks a person. */
+export interface PermissionRule { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 /** How a Ticket's task type was chosen: explicitly by the operator or sorter, its Source's configured default, the assessor's classification, or no task types configured (legacy). */
 export type TaskTypeSource = 'explicit' | 'source' | 'model' | 'legacy'
+/** The resolved Claude Code profile of a Ticket, snapshotted when it is accepted so a later settings edit does not move it. */
+export interface ExecutionClaude { model: string; permissionMode: ClaudePermissionMode; approval: ClaudeApproval; effort: ClaudeEffort; ultracode: boolean }
+/** The resolved opencode profile of a Ticket, snapshotted when it is accepted; empty strings inherit opencode's own configuration. */
+export interface ExecutionOpencode { model: string; agent: string; approval: OpencodeApproval; permissionPreset: OpencodePermissionPreset
+  permissionRules: PermissionRule[] }
+/** Engine-specific options a Ticket was accepted with; only the engines that have them record a key. */
+export interface ExecutionEngineOptions { opencode?: ExecutionOpencode }
 /** What a ticket's Executor chose for its worker: its short name, directory, assignment text, engine, and task-type profile. */
 export interface Execution {
   name: string; directory: string; assignment: string; engine?: EngineName
@@ -338,6 +362,16 @@ export interface Execution {
   instructions?: string
   /** The task type runs its worker with a read-only tool surface and file sandbox; snapshotted when the Ticket is accepted. */
   readOnly?: true
+  /** The prepare command this Ticket runs before its first launch; '' runs none. Absent on Tickets accepted before types could set one. */
+  prepare?: string
+  /** The blocked commands this Ticket declares to its worker; absent on older Tickets, which resolve their type's current list. */
+  blockedCommands?: string[]
+  /** The resolved Claude Code parameters; absent on older Tickets, which resolve them from their type and the current settings. */
+  claude?: ExecutionClaude
+  /** Engine-specific parameters (opencode), snapshotted when accepted. */
+  engineOptions?: ExecutionEngineOptions
+  /** Which evidence chose `engine`: an explicit override, the task type, or the executor fallback. */
+  engineSource?: 'explicit' | 'type' | 'global'
 }
 /** The model a Ticket's worker was accepted with, snapshotted so a later settings change does not move it. */
 export interface ExecutionModel { provider: string; model: string; reasoningEffort?: string }

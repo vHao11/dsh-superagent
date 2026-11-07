@@ -10,6 +10,8 @@ import { key, liveTicket, type EngineName, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import { BQA_MCP_SERVER, BQA_MCP_TOOL_NAMES } from '../sources/bqa.ts'
 import { attachClaudeCode } from '../executor/claude-code.ts'
+import { attachOpencode } from '../executor/opencode.ts'
+import { claudeSettingsForTicket, opencodeSettingsForTicket } from './executor-profile.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -153,7 +155,10 @@ export class Sessions {
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets the permission preset and agent preset of a new Session (read-only for a read-only ticket's worker), and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
-    const readOnly = role === 'worker' && this.readOnlyOf(this.ticketOfId(id))
+    const settings = this.host.store.settings()
+    const ticket = role === 'worker' ? this.ticketOfId(id) : undefined
+    const engine: EngineName = role === 'worker' ? ticket?.execution?.engine ?? settings.executor.engine : 'dsh'
+    const readOnly = role === 'worker' && this.readOnlyOf(ticket)
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     let created = false
     if ('error' in result && result.error.code === 'session/not-found') {
@@ -169,13 +174,10 @@ export class Sessions {
     // run, or by DSH itself, may be missing from that account, which leaves the panel's Open
     // buttons unable to find it; attach is idempotent once the Session is on the account.
     await this.attachWorkspace(result.agent)
-    const settings = this.host.store.settings()
-    const ticket = role === 'worker' ? this.ticketOfId(id) : undefined
-    const engine: EngineName = role === 'worker' ? ticket?.execution?.engine ?? settings.executor.engine : 'dsh'
     // The ticket's execution snapshots the type's model (or the executor's when the type inherits), so a later settings change does not move it.
     const model = role === 'orchestrator' ? settings.eval.model : ticket?.execution?.model ?? settings.executor.model
-    // A native Claude Code worker runs its own loop; seeding a DSH model would only add an unused selection.
-    if (engine !== 'claude-code') await initializeRoleModel(ctx, result.agent, model)
+    // A native engine runs its own loop; seeding a DSH model would only add an unused selection.
+    if (engine === 'dsh') await initializeRoleModel(ctx, result.agent, model)
     await this.decorate(result.agent)
     // Permission overrides are durable in the Session log, so only a new Session needs them; a resumed one replays its own.
     if (created) this.applyPermission(result.agent, readOnly)
@@ -309,7 +311,14 @@ export class Sessions {
     // through to the DSH model loop. The report tool is looked up when a turn reports, by which time tool setup is done.
     if (!master && ticket && this.engineOf(ticket) === 'claude-code') binding.disposers.push(attachClaudeCode({
       context: this.ctx, agent, ticket, store: this.host.store,
-      settings: () => this.host.store.settings().executor, logger: this.ctx.logger, lifetime: this.host.lifetime,
+      // The Ticket's snapshotted Claude Code profile, so the driver reads type-level parameters over the global fallbacks.
+      settings: () => claudeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
+      environment: () => this.host.environment(ticket),
+    }))
+    // A native opencode worker runs its own ACP loop; mount it before the asynchronous setup so its step owns the turn.
+    if (!master && ticket && this.engineOf(ticket) === 'opencode') binding.disposers.push(attachOpencode({
+      context: this.ctx, agent, ticket, store: this.host.store,
+      settings: () => opencodeSettingsForTicket(this.host.store.settings(), ticket), logger: this.ctx.logger, lifetime: this.host.lifetime,
       environment: () => this.host.environment(ticket),
     }))
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
