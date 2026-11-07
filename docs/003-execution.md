@@ -36,6 +36,8 @@ A Source can set its own default. A Feishu chat row's `taskType` covers messages
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
+A task type can set `readOnly: true`. Its Executor Sessions are created under the `dsh-superagent-worker-readonly` preset, whose tool surface is only the skills plus the BQA read-only MCP retrieval tools (`mcp__bqa__search_knowledge`, `mcp__bqa__search_code`, `mcp__bqa__read_excerpt`): it has no shell, file, web or delegation tools, so nothing in the Session can write a file or regain that through a subagent. The Session also runs under the deployment's `read-only` file sandbox permission preset with approvals disabled, so a write attempt fails closed instead of prompting a person. A deployment that defines no `read-only` permission preset refuses such a Ticket rather than running its worker writable. A `ready` report of such a Ticket records the worker Session's provider-reported token usage and its BQA retrieval calls, which the BQA channel relays with the answer for display and evidence.
+
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
 
 ### The worker engine

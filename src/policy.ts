@@ -95,6 +95,11 @@ export const TaskTypeSchema = z.object({
   directoryMode: z.enum(['per-ticket', 'fixed']).default('fixed'),
   /** Appended to the worker system prompt for this type; optional. */
   instructions: z.string().max(4000).default(''),
+  /**
+   * Runs this type's workers read-only: the file write/edit tools are withheld, the Session gets the deployment's read-only
+   * file sandbox preset, and approvals are disabled so an unattended worker cannot be granted a write.
+   */
+  readOnly: z.boolean().default(false),
   /** Reserved for per-type concurrency; not enforced yet. */
   maxConcurrent: z.number().int().min(1).max(LIMITS.maxWorkers.max).optional(),
 }).strict()
